@@ -10,10 +10,13 @@ export function DemoPanel() {
   const [open, setOpen] = useState(false)
   const personas = [
     { id: 'u_dana', label: 'Dana Keller', sub: 'Owner' },
-    { id: 'u_ravi', label: 'Ravi Mehta', sub: 'orgAdmin' },
-    { id: 'u_mia', label: 'Mia Chen', sub: 'member' },
-    { id: 'u_sam', label: 'Sam Ortiz', sub: 'member' },
-  ].filter((p) => d.humans.some((u) => u.id === p.id))
+    { id: 'u_ravi', label: 'Ravi Mehta', sub: 'userAdmin' },
+    { id: 'u_mia', label: 'Mia Chen', sub: 'user' },
+    { id: 'u_sam', label: 'Sam Ortiz', sub: 'user' },
+  ]
+    // Show each persona's current org role; people removed from the org drop out.
+    .map((p) => ({ ...p, sub: d.humans.find((u) => u.id === p.id)?.roles[d.currentOrgId] ?? '' }))
+    .filter((p) => p.sub)
   const btn = (on: boolean) => cx('rounded-md border px-2.5 py-1 text-xs', on ? 'border-zinc-500 bg-zinc-800 text-zinc-100' : 'border-edge text-zinc-400 hover:text-zinc-200')
   return (
     <div className="fixed bottom-3 left-3 z-50 font-sans">

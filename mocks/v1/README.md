@@ -21,6 +21,32 @@ colours carry meaning across the suite:
 
 ---
 
+## Permission model (shared across the VBCDX suite)
+
+Keyhole and Dispatch follow the same permission rules. Where a rule plays out differently in each product, that's noted inline.
+
+1. **Organization roles are Owner, userAdmin and user.**
+   - Owners and userAdmins administer every workspace in the organization.
+   - Users see only the workspaces they've been added to.
+   - The last Owner can't be removed or demoted, but ownership can be transferred.
+   - Keyhole support (superAdmin) sits outside every organization. It can only lock or unlock an account, sign someone out everywhere, and resend an invite. It never sees content.
+2. **Every workspace has at least one human admin.** When no human workspace admin is set, the organization's Owners and userAdmins are its admins by default. In Dispatch, agents can also hold workspace admin, but they never replace the human admin.
+3. **Permission is checked when an action happens; nobody owns the result afterwards.** Creating an agent, adding a member, delegating admin, sending a message or granting a tool needs permission at that moment. The creator doesn't own what they made: agents belong to the organization, and "created by" is kept only for observability and audit.
+4. **Losing permission doesn't undo what was already done.** Removing, suspending or demoting a person or agent stops what they can do next. It leaves everything they already did in place:
+   - agents they created keep working;
+   - admin rights they delegated stand;
+   - tools they granted and messages they sent stay as they are;
+   - receipts they recorded (delivered, read, acknowledged) stay as they are.
+
+   The audit log keeps their name on all of it.
+5. **Refusals win, and they only act on what hasn't happened yet.** Blocks, suspensions and revocations are checked before any grant, and they take effect immediately. In Dispatch that means queued messages; in Keyhole, the next call. A refusal never rewrites history and never counts as completion. For example, blocking the one agent that hasn't acknowledged a message doesn't satisfy an "all acknowledged" condition.
+6. **Every change is attributed and previewed.**
+   - Each admin change logs who made it (human, agent or support) and its before and after values.
+   - Anything destructive or access-reducing shows an impact preview first.
+   - Organization, store and workspace deletions require typing the name to confirm.
+
+---
+
 ## The model in one page
 
 ### Workspaces are permission spaces
@@ -35,16 +61,23 @@ humans are members of workspaces in the same way.
 - An **admin** can add humans or agents, and can **delegate admin** to either kind. An agent with admin can
   do everything a human admin can, through the REST API or MCP: add and remove members, delegate admin, set the
   blocklist, rotate tokens, expire messages, read the audit log. The audit log marks each of those actions as an
-  agent action (`planner … — as delegated admin`). A workspace may end up with only agent admins: that's allowed,
-  but the UI warns before the last human admin is demoted or removed ("planner will be the only admin; org admins can
-  still step in"), the Members tab keeps saying so, and the audit log flags it. Org Owners and orgAdmins always keep
-  admin on every workspace.
-- Delegating admin, removing admin, rotating a token, removing a member, suspending an agent and blocking an agent
-  all show an impact preview first.
+  agent action (`planner … — as delegated admin`).
+- **Every workspace has at least one human admin.** When no human is admin of a workspace explicitly, the
+  organization's Owners and userAdmins are its **default admins**: the Members tab lists them as *Default admin (org
+  Owner/userAdmin)*; they can't be removed there and aren't counted as members. Demoting or removing the last explicit
+  human admin — by a person, or by an agent admin over the API — is allowed; the preview names who becomes default
+  admin, the audit log records the fallback, and the API response lists them in `default_admins`. Agent admins keep
+  their role but never replace the human admin.
+- Organization roles are **Owner**, **userAdmin** and **user**. The last Owner can't be removed, suspended or demoted;
+  **People › Transfer ownership** hands it on. People can be made userAdmin or user, suspended and removed, each
+  behind a preview that says what stays: agents they registered keep working (agents belong to the organization;
+  *registered by* is audit only), admin rights they delegated stand, and their messages stay under their name.
+- Delegating admin, removing admin, turning Read or Write off, rotating a token, removing a member, suspending an
+  agent and blocking an agent all show an impact preview first.
 - **Humans** in a workspace always **see, search and post to every message**, whoever it was addressed to. The
   audience only controls which *agents* receive it. A human's write access can be turned off to make them
   read-only (no posting, expiring, retrying webhooks or editing shared context); their read access can't be. Org
-  Owners and orgAdmins always write.
+  Owners and userAdmins always write.
 
 ### Two credentials, two flows
 
@@ -129,7 +162,7 @@ Switch on the webhook toggle when composing a message:
 the last one learned. **Search** covers messages, payloads, tags, message IDs, tracking codes and context, across
 every workspace you belong to.
 
-**Audit** rows keep the actor's kind and ID and render the current name. Owners and orgAdmins see the whole org,
+**Audit** rows keep the actor's kind and ID and render the current name. Owners and userAdmins see the whole org,
 including workspaces that were deleted ("Incidents (deleted)"). The CSV export carries workspace, actor kind and
 ID, the console human (`via_human_id`), the reason and the detail.
 
@@ -157,16 +190,16 @@ switch persona, pause the simulated agents, or force every list into its loading
 | 2 | **Addressing and receipts** | *Release train* › Messages. Compare the *All agents*, *Only deployer* and *All agents except web-scraper* messages. Filter by tag chips, open any message to see the per-agent receipt table and the delivered, read and acknowledged lists. |
 | 3 | **Fire webhook** | The planner → deployer message fires `ci.acme.dev/hooks/smoke-suite` on ack. Attempt 1 got a 503 and the retry got a 200. The **Webhooks** tab lists every webhook, and a failing one gets a banner. Send one to a URL containing `fail` to watch the scheduled retries (30 s, 2 min, 10 min) and *gave up*; address it only to a blocked agent, or expire it, to see *won't fire*. |
 | 4 | **Listener** | The builder's *waiting on the build farm* message has a 401 call (wrong password) and a 202 call that was appended to its thread by `lsn_8Kq2vT`. Use *Simulate a call* or *Simulate a wrong password*, *Rotate password*, or *Expire now* and then call it again to get a 410. Compose your own with Webhook › Listen and you get the URL and the one-time password. |
-| 5 | **Delegation** | Members: planner (an **agent**) and Ravi are admins delegated by Dana. Delegate or remove admin from the ⋯ menu (each shows an impact preview). Remove admin from Ravi, then from Dana: the dialog warns that planner will be the only admin, and Audit flags it. The audit log shows planner adding deployer *as delegated admin*; to produce such rows yourself, use Try it as planner (Flow 8) on the admin endpoints. |
+| 5 | **Delegation** | Members: planner (an **agent**) and Ravi are admins delegated by Dana. Delegate or remove admin from the ⋯ menu (each shows an impact preview). Remove admin from Ravi, then from Dana: the preview says Dana Keller and Ravi Mehta (org admins) become the workspace's default admins, the Members tab lists them as *Default admin*, and Audit records the fallback — planner stays admin but never the only one. On **People**, the last Owner is protected; transfer ownership to Ravi, switch to Ravi, and remove Dana: her agents, the admin rights she delegated and her messages all stay. The audit log shows planner adding deployer *as delegated admin*; to produce such rows yourself, use Try it as planner (Flow 8) on the admin endpoints. |
 | 6 | **Blocklists and filters** | Access tab: web-scraper is a member with a valid token but sits on the workspace blocklist, so the checker shows it refused at rule 3. *Block…* previews what a new block affects. On the Agents page, deployer blocks *Sandbox* on its own side, reviewer blocks web-scraper as an author, and web-scraper has made itself read-only. Disconnect deployer, send it a message, block it, reconnect: the queued receipt turns *Filtered*, not delivered, while the ones it had already read keep their state with an *access removed* note. Suspend it instead and the queue is *Held*, then delivered on resume. Block the only target that hasn't acknowledged an all-ack message and its webhook says *Won't fire*, instead of firing. |
-| 7 | **Human oversight** | View as *Mia* (a member): she sees and searches every message, including ones addressed *only* to other agents, and can post, but can't manage members. **Search** spans workspaces, and *Waiting on an ack* finds stalled messages. |
+| 7 | **Human oversight** | View as *Mia* (a user): she sees and searches every message, including ones addressed *only* to other agents, and can post, but can't manage members. **Search** spans workspaces, and *Waiting on an ack* finds stalled messages. |
 | 8 | **API & MCP** | Developers › Try it. The console needs the agent's real tokens: without them it's **401**. Seeded agents' tokens were never shown, so rotate builder's agent token (Agents › builder) and its Release train token (Members › ⋯), then *Use the one issued in this tab*. As *builder*, send a message and get **201** with the per-agent receipts, read and acknowledge a chosen message, and see that `GET msg_05` (addressed only to deployer) is **404** and search leaves it out. As *web-scraper* (after rotating its agent token), reading Release train returns **403** naming the blocklist rule. Every call shows up in Audit as the agent *via* you. |
 
 ## Decisions to revisit before this becomes a spec
 
 - **Human write access.** Humans always read. Their write access is toggleable, and humans aren't subject to blocklists, which list agent IDs only.
 - **Agent read vs. the audience.** Decided for now: an agent reads only messages addressed to it (or written by it) — the inbox, search and GET all apply that rule. Humans see all messages. Revisit if agents should browse a whole workspace they can read.
-- **Agent-only admin.** Allowed, warned and flagged (option a of the review). Still open: also notify org admins, or require a human admin per workspace.
+- **Agent-only admin.** Decided by the permission model: never. Without an explicit human admin, the org's Owners and userAdmins are default admins.
 - **Filtered is final, held is not.** A queued receipt filtered by a block, removal or revoke isn't restored when the block is lifted; one held by a suspension or a Read toggle is delivered when access returns.
 - **Console credentials.** The prototype can only verify tokens issued in the current browser tab; a real server checks hashes.
 - **Listener expiry.** A listener requires the message to have an expiry, so it can never stay open forever.

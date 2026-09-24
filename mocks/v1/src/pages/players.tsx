@@ -2,12 +2,12 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
-import { actions, agentById, emailTaken, isOnline, isOrgAdmin, labelTaken, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
-import type { Agent, AgentFilters, Harness, OrgRole } from '../lib/types'
+import { actions, agentById, canManageHuman, emailTaken, explicitHumanAdmins, humanFootprint, isLastOwner, isOnline, isOrgAdmin, labelTaken, myOrgRole, org, orgAdmins, principalName, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
+import type { Agent, AgentFilters, Harness, Human, OrgRole, Workspace } from '../lib/types'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
 import { accessImpactRows, AgentGlyph, AuditLog, ImpactDialog, ListBody, PrincipalChip } from '../components/shared'
-import { Breadcrumb, Button, Card, Field, Footer, Input, Modal, PageTitle, Pill, Row, Segmented, StatusInline, Table, Textarea, Toggle, cx } from '../components/ui'
+import { Breadcrumb, Button, Card, Field, Footer, Input, Menu, Modal, PageTitle, Pill, Row, Segmented, StatusInline, Table, Textarea, Toggle, cx } from '../components/ui'
 
 /* ------------------------------------------------------------------ */
 /* Agents                                                              */
@@ -200,7 +200,7 @@ export function AgentDetail() {
           <span>{a.harness}</span>
           <span className="text-zinc-500">Registered</span>
           <span>
-            {ago(a.createdAt, now)} · {a.createdBy}
+            {ago(a.createdAt, now)} · by {a.createdBy} <span className="text-xs text-zinc-500">(audit only — agents belong to the organization)</span>
           </span>
           <span className="text-zinc-500">Last seen</span>
           <span>{a.lastSeen ? ago(a.lastSeen, now) : 'Never connected'}</span>
@@ -393,19 +393,22 @@ function IdChips({ ids, label, options, onChange, disabled, what }: { ids: strin
 /* ------------------------------------------------------------------ */
 /* People                                                              */
 /* ------------------------------------------------------------------ */
-const P_COLS = '1.4fr 1.6fr 0.9fr 0.9fr 2fr 1fr'
+const P_COLS = '1.4fr 1.6fr 0.9fr 0.9fr 2fr 1fr 36px'
+type PersonAction = { kind: 'remove' | 'suspend' | 'transfer' | 'role'; h: Human; role?: 'userAdmin' | 'user' }
 export function PeoplePage() {
   const d = useDB()
   const now = useNow()
   const [inviting, setInviting] = useState(false)
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<OrgRole>('member')
+  const [role, setRole] = useState<OrgRole>('user')
+  const [acting, setActing] = useState<PersonAction | null>(null)
   const list = orgHumans(d)
+  const iAmOwner = myOrgRole(d) === 'Owner'
   return (
     <div>
       <PageTitle actions={isOrgAdmin(d) && <Button variant="primary" onClick={() => setInviting(true)}>Invite person</Button>}>People</PageTitle>
       <div className="mt-1 max-w-[760px] text-sm2 text-zinc-500">Humans sign in to the web app with SSO. Like agents, they see a workspace only once an admin adds them — and inside it they can read, search and post to every message.</div>
-      <Table cols={P_COLS} head={['Name', 'Email', 'Org role', 'Status', 'Workspaces', 'Last active']} className="mt-5 max-w-[1080px]">
+      <Table cols={P_COLS} head={['Name', 'Email', 'Org role', 'Status', 'Workspaces', 'Last active', '']} className="mt-5 max-w-[1120px]">
         <ListBody cols={P_COLS} what="people">
           {list.map((h) => {
             const ws = d.workspaces.filter((w) => w.members.some((m) => m.kind === 'human' && m.id === h.id))
@@ -413,7 +416,10 @@ export function PeoplePage() {
               <Row key={h.id} cols={P_COLS}>
                 <PrincipalChip p={{ kind: 'human', id: h.id }} />
                 <div className="text-zinc-400">{h.email}</div>
-                <div className="text-zinc-400">{h.roles[d.currentOrgId]}</div>
+                <div className="text-zinc-400">
+                  {h.roles[d.currentOrgId]}
+                  {isLastOwner(d, h) && <div className="text-2xs text-zinc-600">last Owner</div>}
+                </div>
                 <div>{h.status === 'active' ? <StatusInline tone="green">Active</StatusInline> : h.status === 'invited' ? <StatusInline tone="gray">Invited</StatusInline> : <StatusInline tone="amber">Suspended</StatusInline>}</div>
                 <div className="text-xs text-zinc-400">
                   {ws.map((w) => {
@@ -428,6 +434,25 @@ export function PeoplePage() {
                   {!ws.length && '—'}
                 </div>
                 <div className="text-zinc-500">{h.id === d.currentUserId ? 'Now' : ago(h.lastActive, now)}</div>
+                <div className="text-right">
+                  {isOrgAdmin(d) && h.id !== d.currentUserId && (
+                    <Menu
+                      label={`Actions for ${h.name}`}
+                      items={[
+                        h.roles[d.currentOrgId] === 'Owner'
+                          ? null
+                          : h.roles[d.currentOrgId] === 'user'
+                            ? { label: 'Make userAdmin', onClick: () => setActing({ kind: 'role', h, role: 'userAdmin' }) }
+                            : { label: 'Make user', onClick: () => setActing({ kind: 'role', h, role: 'user' }) },
+                        iAmOwner && h.roles[d.currentOrgId] !== 'Owner' ? { label: 'Transfer ownership…', disabled: h.status !== 'active', hint: h.status !== 'active' ? 'Only to an active person' : undefined, onClick: () => setActing({ kind: 'transfer', h }) } : null,
+                        h.status === 'suspended'
+                          ? { label: 'Resume', disabled: !canManageHuman(d, h), onClick: () => actions.setHumanStatus(h.id, 'active') }
+                          : { label: 'Suspend…', disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'suspend', h }) },
+                        { label: 'Remove from organization…', danger: true, disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'remove', h }) },
+                      ]}
+                    />
+                  )}
+                </div>
               </Row>
             )
           })}
@@ -437,14 +462,14 @@ export function PeoplePage() {
         <Field label="Email" error={emailTaken(d, email) ? `${email.trim()} is already in ${d.orgs.find((o) => o.id === d.currentOrgId)?.name}.` : null}>
           <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
         </Field>
-        <Field label="Org role" hint="Owner and orgAdmin can see and administer every workspace. Members see the workspaces they’re added to.">
+        <Field label="Org role" hint="Owners and userAdmins administer every workspace. Users see only the workspaces they’ve been added to. Owner is given by transferring ownership.">
           <Segmented
             label="Org role"
             value={role}
             onChange={setRole}
             options={[
-              { value: 'member', label: 'member' },
-              { value: 'orgAdmin', label: 'orgAdmin' },
+              { value: 'user', label: 'user' },
+              { value: 'userAdmin', label: 'userAdmin' },
             ]}
           />
         </Field>
@@ -466,7 +491,71 @@ export function PeoplePage() {
           </Button>
         </Footer>
       </Modal>
+      <PersonConfirm acting={acting} onClose={() => setActing(null)} />
     </div>
   )
 }
 
+
+/** Impact previews for People: role changes, transfer, suspend, remove. Nothing a person did is undone (rule 4). */
+function PersonConfirm({ acting, onClose }: { acting: PersonAction | null; onClose: () => void }) {
+  const d = useDB()
+  const h = acting?.h
+  if (!acting || !h) return <ImpactDialog open={false} onClose={onClose} title="" rows={[]} confirmLabel="" onConfirm={() => {}} />
+  const f = humanFootprint(d, h)
+  const others = orgAdmins(d).filter((x) => x.id !== h.id)
+  const fallback = (ws: Workspace[]) =>
+    ws.length ? `${ws.map((w) => w.name).join(', ')} — ${others.map((x) => x.name).join(' and ')} (org admins) become ${ws.length === 1 ? 'its' : 'their'} default admins` : 'None'
+  const standing: [string, ReactNode, ('amber' | 'red')?][] = [
+    ['Agents they registered', f.agents.length ? `${f.agents.map((a) => a.label).join(', ')} — unaffected; agents belong to the organization` : 'None'],
+    ['Admin rights they delegated', f.delegations.length ? `${f.delegations.map(({ w, m }) => `${principalName(d, m)} on ${w.name}`).join(', ')} — stand` : 'None'],
+    ['Members they added', f.added.length ? `${f.added.length} — stay` : 'None'],
+    ['Messages they sent', `${f.messages} — stay, under their name`],
+  ]
+  const spec =
+    acting.kind === 'role'
+      ? {
+          title: `Make ${h.name} a ${acting.role}?`,
+          rows: [
+            ['Org role', `${h.roles[d.currentOrgId]} → ${acting.role}`, 'amber'],
+            ['Workspaces', acting.role === 'userAdmin' ? 'Administers every workspace in the organization' : `Sees only ${f.memberships.map((w) => w.name).join(', ') || 'no workspaces'} (where they’ve been added)`],
+            ...(acting.role === 'user'
+              ? ([['Default admin of', ((ws) => (ws.length ? `${ws.map((w) => w.name).join(', ')} — no longer; ${others.map((x) => x.name).join(' and ')} remain default admins` : 'None'))(d.workspaces.filter((w) => w.orgId === d.currentOrgId && !explicitHumanAdmins(w).length))]] as [string, ReactNode][])
+              : []),
+            ...standing.slice(0, 2),
+          ] as [string, ReactNode, ('amber' | 'red')?][],
+          body: 'Permission is checked when an action happens; what they already did stays in place.',
+          confirm: acting.role === 'userAdmin' ? 'Make userAdmin' : 'Make user',
+          tone: acting.role === 'userAdmin' ? ('primary' as const) : ('danger' as const),
+          run: () => actions.setOrgRole(h.id, acting.role!),
+        }
+      : acting.kind === 'transfer'
+        ? {
+            title: `Transfer ownership of ${org(d)?.name} to ${h.name}?`,
+            rows: [
+              [h.name, `${h.roles[d.currentOrgId]} → Owner`, 'amber'],
+              ['You', 'Owner → userAdmin — you keep administering every workspace'],
+            ] as [string, ReactNode, ('amber' | 'red')?][],
+            body: 'Only an Owner can act on Owners. After this, the last-Owner protection applies to them.',
+            confirm: 'Transfer ownership',
+            tone: 'danger' as const,
+            run: () => actions.transferOwnership(h.id),
+          }
+        : {
+            title: acting.kind === 'suspend' ? `Suspend ${h.name}?` : `Remove ${h.name} from ${org(d)?.name}?`,
+            rows: [
+              ['Org role', `${h.roles[d.currentOrgId]}${acting.kind === 'remove' ? ' → none' : ''}`, 'amber'],
+              [acting.kind === 'remove' ? 'Their memberships' : 'Workspaces', f.memberships.map((w) => w.name).join(', ') || 'None', acting.kind === 'remove' && f.memberships.length ? 'amber' : undefined],
+              ...(acting.kind === 'remove' ? ([['Last explicit human admin in', fallback(f.lastExplicitAdminIn)]] as [string, ReactNode][]) : []),
+              ...standing,
+            ] as [string, ReactNode, ('amber' | 'red')?][],
+            body:
+              acting.kind === 'suspend'
+                ? 'Stops what they can do next — they can’t sign in or act until resumed. Losing permission doesn’t undo what was already done, and the audit log keeps their name on all of it.'
+                : 'Losing permission doesn’t undo what was already done. Agents they registered keep working, admin rights they delegated stand, and the audit log keeps their name on all of it.',
+            confirm: acting.kind === 'suspend' ? 'Suspend' : 'Remove from organization',
+            tone: 'danger' as const,
+            run: () => (acting.kind === 'suspend' ? actions.setHumanStatus(h.id, 'suspended') : actions.removeHuman(h.id)),
+          }
+  return <ImpactDialog open onClose={onClose} title={spec.title} rows={spec.rows} body={spec.body} confirmLabel={spec.confirm} confirmVariant={spec.tone} onConfirm={spec.run} />
+}

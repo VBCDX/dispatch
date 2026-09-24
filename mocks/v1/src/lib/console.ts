@@ -1,6 +1,6 @@
 import { evaluate, visibleToAgent } from './access'
 import type { Endpoint, PathParam } from './api'
-import { actions, agentById, fireState, getDB, hasHumanAdmin, humanById, isExpired, mayExpire, receiptState, sessionSecret, wsById, type Actor } from './store'
+import { actions, agentById, fireState, getDB, defaultAdmins, explicitHumanAdmins, humanById, isExpired, mayExpire, receiptState, sessionSecret, wsById, type Actor } from './store'
 import type { Agent, Audience, DB, FireTrigger, Message, Workspace } from './types'
 
 /*
@@ -334,7 +334,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       return ok(existing ? 200 : 201, { id: after?.id, version: after?.version })
     }
     case 'members':
-      return ok(200, { members: w.members.map((m) => ({ kind: m.kind, id: m.id, label: m.kind === 'agent' ? agentById(d, m.id)?.label : humanById(d, m.id)?.name, role: m.role, read: m.read, write: m.write, ...(m.tokenLast4 ? { token_last4: m.tokenLast4 } : {}) })) })
+      return ok(200, { members: w.members.map((m) => ({ kind: m.kind, id: m.id, label: m.kind === 'agent' ? agentById(d, m.id)?.label : humanById(d, m.id)?.name, role: m.role, read: m.read, write: m.write, ...(m.tokenLast4 ? { token_last4: m.tokenLast4 } : {}) })), default_admins: defaultAdmins(d, w).map((h) => ({ id: h.id, name: h.name, org_role: h.roles[w.orgId] })) })
     case 'add-member': {
       const kind = body.kind
       const pid = body.id
@@ -354,20 +354,23 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       const m = w.members.find((x) => x.id === pid)
       if (!m) return refuse(fail(404, 'not_found', `${pid} is not a member of ${w.name}.`))
       const p = { kind: m.kind, id: m.id }
-      const lastAdmin = m.role === 'admin' && w.members.filter((x) => x.role === 'admin').length === 1
       if (ep.id === 'rotate-member-token') {
         if (m.kind !== 'agent') return refuse(fail(409, 'not_an_agent', 'Humans sign in with SSO; they have no workspace token.'))
         const t = actions.rotateMemberToken(wsId, m.id, by)
         const after = wsById(getDB(), wsId)?.members.find((x) => x.id === m.id)
         return ok(200, { workspace_token: t, old_token_valid_until: iso(after?.prevTokenUntil), note: 'Shown once.' })
       }
-      const hadHuman = hasHumanAdmin(w)
+      // Demoting or removing the last explicit human admin is allowed — the org's Owners and userAdmins become the
+      // workspace's default admins, so it never ends up administered by agents alone.
+      const hadExplicit = explicitHumanAdmins(w).length > 0
+      const fallback = () => {
+        const w2 = wsById(getDB(), wsId)!
+        return hadExplicit && !explicitHumanAdmins(w2).length ? { default_admins: defaultAdmins(getDB(), w2).map((h) => ({ id: h.id, name: h.name, org_role: h.roles[w2.orgId] })) } : {}
+      }
       if (ep.id === 'remove-member') {
-        if (lastAdmin) return refuse(fail(409, 'last_admin', `${pid} is the only admin of ${w.name}; delegate admin to someone else first.`))
         const pending = m.kind === 'agent' ? d.messages.filter((x) => x.wsId === wsId && x.receipts[m.id] && !x.receipts[m.id].filtered && !x.receipts[m.id].ackAt && !isExpired(x)).length : 0
         actions.removeMember(wsId, p, by)
-        const w2 = wsById(getDB(), wsId)!
-        return ok(200, { removed: true, filtered_receipts: pending, warnings: hadHuman && !hasHumanAdmin(w2) ? ['no_human_admin'] : [] })
+        return ok(200, { removed: true, filtered_receipts: pending, ...fallback() })
       }
       const patch: { role?: 'admin' | 'member'; read?: boolean; write?: boolean } = {}
       if (body.role !== undefined) {
@@ -381,11 +384,10 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       }
       if (!Object.keys(patch).length) return refuse(fail(422, 'empty_patch', 'Send at least one of role, read, write.'))
       if (m.kind === 'human' && patch.read === false) return refuse(fail(422, 'humans_always_read', 'Humans in a workspace always read every message.', { field: 'read' }))
-      if (patch.role === 'member' && lastAdmin) return refuse(fail(409, 'last_admin', `${pid} is the only admin of ${w.name}.`))
       actions.setMember(wsId, p, patch, by)
       const w2 = wsById(getDB(), wsId)!
       const m2 = w2.members.find((x) => x.id === pid)!
-      return ok(200, { kind: m2.kind, id: m2.id, role: m2.role, read: m2.read, write: m2.write, warnings: hadHuman && !hasHumanAdmin(w2) ? ['no_human_admin'] : [] })
+      return ok(200, { kind: m2.kind, id: m2.id, role: m2.role, read: m2.read, write: m2.write, ...fallback() })
     }
     case 'blocklist': {
       const ids = body.agent_ids

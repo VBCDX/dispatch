@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { evaluate, type Op } from '../lib/access'
 import { ago, clock, maskAgentToken, maskWsToken, plural } from '../lib/format'
-import { actions, agentById, canAdmin, getDB, isExpired, isOrgAdmin, me, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
-import type { Harness, Membership, MemberRole, Principal } from '../lib/types'
+import { actions, agentById, canAdmin, defaultAdmins, getDB, isExpired, isOrgAdmin, me, ORG_ADMIN_ROLES, orgAdmins, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
+import type { Harness, Membership, MemberRole, OrgRole, Principal } from '../lib/types'
 import { CopyChip, DispatchMark, KeyholeIcon } from '../components/credential'
 import { showSecret } from '../lib/secrets'
 import { accessImpactRows, ImpactDialog, PrincipalChip } from '../components/shared'
@@ -26,10 +26,10 @@ export function WsMembers() {
   const [pending, setPending] = useState<Pending | null>(null)
   const sorted = [...w.members].sort((a, b) => (a.kind === b.kind ? (a.role === b.role ? 0 : a.role === 'admin' ? -1 : 1) : a.kind === 'human' ? -1 : 1))
   const p = (m: Membership): Principal => ({ kind: m.kind, id: m.id })
-  const admins = w.members.filter((m) => m.role === 'admin')
-  const humanAdmins = admins.filter((m) => m.kind === 'human')
-  const orgAdmins = orgHumans(d).filter((h) => ['Owner', 'orgAdmin'].includes(h.roles[d.currentOrgId]))
-  const isOrgAdminHuman = (m: Membership) => m.kind === 'human' && ['Owner', 'orgAdmin'].includes(humanById(d, m.id)?.roles[d.currentOrgId] ?? '')
+  const isOrgAdminHuman = (m: Membership) => m.kind === 'human' && ORG_ADMIN_ROLES.includes(humanById(d, m.id)?.roles[d.currentOrgId] as OrgRole)
+  // With no explicit human admin, the org's Owners and userAdmins administer the workspace by default.
+  const defaults = defaultAdmins(d, w)
+  const defaultRows = defaults.filter((h) => !w.members.some((m) => m.kind === 'human' && m.id === h.id))
 
   return (
     <div className="mt-5">
@@ -43,18 +43,34 @@ export function WsMembers() {
           </Button>
         )}
       </div>
-      {admins.length > 0 && !humanAdmins.length && (
-        <Callout tone="amber" className="mt-4">
-          No human admins here — only {admins.map((m) => principalName(d, p(m))).join(', ')} administer{admins.length === 1 ? 's' : ''} {w.name}, over the API and MCP. Org admins ({orgAdmins.map((h) => h.name).join(', ')}) can still step in.
+      {defaults.length > 0 && (
+        <Callout tone="neutral" className="mt-4">
+          No human is admin of {w.name} explicitly, so the organization’s Owners and userAdmins — {defaults.map((h) => h.name).join(', ')} — are its default admins. Every workspace has at least one human admin; agent admins never replace it. Delegate admin to a person here to set one explicitly.
         </Callout>
       )}
       <Table cols={M_COLS} head={['Member', 'Role', 'Read', 'Write', 'Workspace token', 'Effective access', '']} className="mt-4">
+        {defaultRows.map((h) => (
+          <Row key={'default' + h.id} cols={M_COLS} className="bg-white/[0.01]">
+            <div className="min-w-0">
+              <PrincipalChip p={{ kind: 'human', id: h.id }} withKind />
+              <div className="mt-0.5 pl-[30px] text-2xs text-zinc-600">{h.email}</div>
+            </div>
+            <div>
+              <Pill tone="green">default admin</Pill>
+              <div className="mt-0.5 text-2xs text-zinc-500">org {h.roles[d.currentOrgId]}</div>
+            </div>
+            <span className="text-2xs text-zinc-500">Always</span>
+            <span className="text-2xs text-zinc-500">Always</span>
+            <span className="text-2xs text-zinc-600">Signs in with SSO</span>
+            <span className="text-xs text-zinc-400">Default admin (org {h.roles[d.currentOrgId]}) — not a member; can’t be removed here</span>
+            <span />
+          </Row>
+        ))}
         {sorted.map((m) => {
           const a = m.kind === 'agent' ? agentById(d, m.id) : null
           const h = m.kind === 'human' ? humanById(d, m.id) : null
           const r = a ? evaluate(d, a.id, w.id, 'read') : null
           const wr = a ? evaluate(d, a.id, w.id, 'write') : null
-          const lastAdmin = m.role === 'admin' && admins.length === 1
           const orgAdminHuman = isOrgAdminHuman(m)
           const grace = m.prevTokenLast4 && m.prevTokenUntil && m.prevTokenUntil > now
           return (
@@ -67,6 +83,7 @@ export function WsMembers() {
               </div>
               <div>
                 <Pill tone={m.role === 'admin' ? 'green' : 'neutral'}>{m.role}</Pill>
+                {m.role !== 'admin' && defaults.some((h) => h.id === m.id) && <div className="mt-0.5 text-2xs text-green-400">default admin (org {humanById(d, m.id)?.roles[d.currentOrgId]})</div>}
                 {m.delegatedBy && <div className="mt-0.5 text-2xs text-zinc-500">delegated by {m.delegatedBy}</div>}
               </div>
               <div>
@@ -101,10 +118,10 @@ export function WsMembers() {
                     label={`Actions for ${principalName(d, p(m))}`}
                     items={[
                       m.role === 'admin'
-                        ? { label: 'Remove admin', disabled: lastAdmin, hint: lastAdmin ? 'The only admin here' : undefined, onClick: () => setPending({ kind: 'demote', m }) }
+                        ? { label: 'Remove admin', onClick: () => setPending({ kind: 'demote', m }) }
                         : { label: `Delegate admin to this ${m.kind}`, onClick: () => setPending({ kind: 'delegate', m }) },
                       m.kind === 'agent' ? { label: 'Rotate workspace token', onClick: () => setPending({ kind: 'rotate', m }) } : null,
-                      { label: 'Remove from workspace', danger: true, disabled: lastAdmin, hint: lastAdmin ? 'The only admin here' : undefined, onClick: () => setPending({ kind: 'remove', m }) },
+                      { label: 'Remove from workspace', danger: true, onClick: () => setPending({ kind: 'remove', m }) },
                     ]}
                   />
                 )}
@@ -113,7 +130,6 @@ export function WsMembers() {
           )
         })}
       </Table>
-      {admins.length === 1 && <div className="mt-2 text-xs text-zinc-500">A workspace always keeps at least one admin.</div>}
 
       <AddMemberModal open={adding} onClose={() => setAdding(false)} onToken={(t, agentId) => showWsToken(w, agentId, t, 'Agent added')} />
       <MemberConfirm pending={pending} onClose={() => setPending(null)} />
@@ -127,13 +143,14 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
   const w = useWorkspace()
   const m = pending?.m
   const name = m ? principalName(d, { kind: m.kind, id: m.id }) : ''
-  const orgAdmins = orgHumans(d).filter((h) => ['Owner', 'orgAdmin'].includes(h.roles[d.currentOrgId]))
-  // Would this leave only agents administering the workspace? Allowed, but said out loud (and flagged in Audit).
+  // Demoting or removing the last explicit human admin is allowed: the org's Owners and userAdmins become default admins.
   const losesLastHuman = !!m && m.kind === 'human' && m.role === 'admin' && (pending?.kind === 'demote' || pending?.kind === 'remove') && !w.members.some((x) => x !== m && x.kind === 'human' && x.role === 'admin')
-  const agentAdmins = w.members.filter((x) => x !== m && x.role === 'admin').map((x) => principalName(d, { kind: x.kind, id: x.id }))
-  const noHumanWarning = losesLastHuman && (
-    <Callout tone="amber">
-      {agentAdmins.join(', ')} will be the only admin{agentAdmins.length === 1 ? '' : 's'} of {w.name} — agent{agentAdmins.length === 1 ? '' : 's'} acting over the API and MCP. Org admins ({orgAdmins.map((h) => h.name).join(', ')}) can still step in. This is flagged in the audit log.
+  const otherAdmins = w.members.filter((x) => x !== m && x.role === 'admin').map((x) => principalName(d, { kind: x.kind, id: x.id }))
+  const defaultNames = orgAdmins(d).map((h) => h.name)
+  const fallbackNote = losesLastHuman && (
+    <Callout tone="neutral">
+      {defaultNames.length > 1 ? `${defaultNames.slice(0, -1).join(', ')} and ${defaultNames[defaultNames.length - 1]}` : defaultNames[0]} (org admins) become this workspace’s default admins.
+      {otherAdmins.length > 0 && ` ${otherAdmins.join(', ')} keep${otherAdmins.length === 1 ? 's' : ''} admin too, but a workspace is never administered by agents alone.`} The audit log records the fallback.
     </Callout>
   )
   const self = m?.kind === 'human' && m.id === d.currentUserId
@@ -162,12 +179,14 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
               rows: [
                 ['Kind', m.kind],
                 ['Role after', 'member — keeps its read and write access'],
-                ['Admins left', agentAdmins.join(', ') || '—', losesLastHuman ? 'amber' : undefined],
+                ['Explicit admins left', otherAdmins.join(', ') || '—'],
+                ['Human admin', losesLastHuman ? `Default admins: ${defaultNames.join(', ')} (org Owners/userAdmins)` : 'Unchanged'],
+                ['Admin rights they delegated', 'Stand — nothing cascades from losing admin'],
               ],
               body: (
                 <div className="flex flex-col gap-2.5">
-                  {self && <div>{['Owner', 'orgAdmin'].includes(me(d).roles[d.currentOrgId]) ? 'You keep admin here through your org role.' : 'You lose admin here as soon as you confirm.'}</div>}
-                  {noHumanWarning}
+                  {self && <div>{ORG_ADMIN_ROLES.includes(me(d).roles[d.currentOrgId]) ? 'You keep admin here through your org role.' : 'You lose admin here as soon as you confirm.'}</div>}
+                  {fallbackNote}
                 </div>
               ),
               confirm: 'Remove admin',
@@ -222,8 +241,8 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
                 ],
                 body: (
                   <div className="flex flex-col gap-2.5">
-                    <div>Its past messages and receipts stay in the workspace and the audit log.</div>
-                    {noHumanWarning}
+                    <div>Its past messages and receipts stay in the workspace and the audit log. Admin rights it delegated stand.</div>
+                    {fallbackNote}
                   </div>
                 ),
                 confirm: 'Remove member',

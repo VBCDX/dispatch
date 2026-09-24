@@ -1,4 +1,5 @@
-export type OrgRole = 'Owner' | 'orgAdmin' | 'member'
+/** Organization roles, shared across the VBCDX suite. Owners and userAdmins administer every workspace. */
+export type OrgRole = 'Owner' | 'userAdmin' | 'user'
 
 export interface Org {
   id: string
@@ -40,7 +41,9 @@ export interface Agent {
   prevTokenUntil?: number
   status: 'active' | 'suspended' | 'revoked'
   createdAt: number
+  /** Who registered it — kept for audit only. Agents belong to the organization, not to their creator. */
   createdBy: string
+  createdById?: string
   lastSeen: number | null
   /** Holding an open connection (MCP session or polling the REST API). Offline agents' messages wait, queued. */
   connected: boolean
@@ -65,10 +68,13 @@ export interface Membership {
   /** After a rotation the previous workspace token keeps working until prevTokenUntil (10 minutes). */
   prevTokenLast4?: string
   prevTokenUntil?: number
+  /** Who added it and who delegated admin — audit only; neither owns the membership, and both stand if that person loses access. */
   addedBy: string
+  addedById?: string
   addedAt: number
   /** Set when admin was delegated, names who delegated it. */
   delegatedBy?: string
+  delegatedById?: string
 }
 
 export interface Workspace {
