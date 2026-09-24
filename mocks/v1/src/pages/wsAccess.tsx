@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { evaluate, type Op } from '../lib/access'
 import { ago, clock, maskAgentToken, maskWsToken, plural } from '../lib/format'
-import { actions, agentById, canAdmin, getDB, isExpired, me, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
+import { actions, agentById, canAdmin, getDB, isExpired, isOrgAdmin, me, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
 import type { Harness, Membership, MemberRole, Principal } from '../lib/types'
 import { CopyChip, DispatchMark, KeyholeIcon } from '../components/credential'
 import { showSecret } from '../lib/secrets'
@@ -511,11 +511,14 @@ export function WsConnect() {
   const m = agents.find((x) => x.id === agentId)
   const [h, setH] = useState<Harness | 'REST'>(a?.harness === 'Other' ? 'REST' : (a?.harness ?? 'Claude Code'))
   const [waiting, setWaiting] = useState(false)
+  const [template, setTemplate] = useState(false)
+  const [rotating, setRotating] = useState<'agent' | 'ws' | null>(null)
   const timer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(timer.current), [])
   useEffect(() => {
     if (a) setH(a.harness === 'Other' ? 'REST' : a.harness)
     setWaiting(false)
+    setTemplate(false)
   }, [agentId]) // eslint-disable-line
   if (!agents.length)
     return (
@@ -530,7 +533,11 @@ export function WsConnect() {
   const maskW = maskWsToken(m.tokenLast4 ?? '')
   const preview = configFor(h, { agentId: a.id, agentToken: agentTok ? maskA : '<AGENT_TOKEN>', wsId: w.id, wsToken: wsTok ? maskW : '<WORKSPACE_TOKEN>' })
   const access = evaluate(d, a.id, w.id, 'read')
-  const queued = d.messages.filter((x) => x.wsId === w.id && x.receipts[a.id] && !x.receipts[a.id].deliveredAt && !x.receipts[a.id].filtered).length
+  const queued = d.messages.filter((x) => x.wsId === w.id && x.receipts[a.id] && !x.receipts[a.id].deliveredAt && !x.receipts[a.id].filtered && !isExpired(x)).length
+  // The file only works as-is when both tokens were issued in this tab; otherwise it's a template.
+  const missing = [!agentTok && 'agent token', !wsTok && 'workspace token'].filter(Boolean) as string[]
+  const canRotateAgent = isOrgAdmin(d) && a.status !== 'revoked'
+  const canRotateWs = canAdmin(d, w)
 
   const download = () => {
     const cfg = configFor(h, { agentId: a.id, agentToken: agentTok ?? '<AGENT_TOKEN>', wsId: w.id, wsToken: wsTok ?? '<WORKSPACE_TOKEN>' })
@@ -540,7 +547,8 @@ export function WsConnect() {
     el.download = cfg.file
     el.click()
     URL.revokeObjectURL(url)
-    if (!isOnline(a) && access.allowed) {
+    setTemplate(missing.length > 0)
+    if (!isOnline(a) && access.allowed && !missing.length) {
       setWaiting(true)
       window.clearTimeout(timer.current)
       timer.current = window.setTimeout(() => {
@@ -565,22 +573,49 @@ export function WsConnect() {
           </Field>
           <Segmented size="sm" label="Harness" value={h} onChange={setH} options={HARNESSES.map((x) => ({ value: x, label: x }))} className="mb-1" />
         </div>
-        <div className="grid grid-cols-[170px_1fr] items-center gap-x-4 gap-y-2 rounded-[10px] border border-edge bg-panel p-4 text-sm2">
+        <div className="grid grid-cols-[170px_1fr_auto] items-center gap-x-4 gap-y-2 rounded-[10px] border border-edge bg-panel p-4 text-sm2">
           <span className="text-zinc-500">Agent ID</span>
           <CopyChip value={a.id} variant="inline" />
+          <span />
           <span className="text-zinc-500">Agent token</span>
-          <span className="masked-token text-xs text-zinc-400">{maskA}</span>
+          <span>
+            <span className="masked-token text-xs text-zinc-400">{maskA}</span>
+            <span className={cx('ml-2 text-2xs', agentTok ? 'text-green-400' : 'text-amber-400')}>{agentTok ? 'issued in this tab — goes in the file' : 'not in this tab — placeholder in the file'}</span>
+          </span>
+          {canRotateAgent ? (
+            <Button size="sm" onClick={() => setRotating('agent')}>
+              Rotate agent token
+            </Button>
+          ) : (
+            <span />
+          )}
           <span className="text-zinc-500">Workspace ID</span>
           <CopyChip value={w.id} variant="inline" />
+          <span />
           <span className="text-zinc-500">Workspace token</span>
-          <span className="masked-token text-xs text-zinc-400">{maskW}</span>
+          <span>
+            <span className="masked-token text-xs text-zinc-400">{maskW}</span>
+            <span className={cx('ml-2 text-2xs', wsTok ? 'text-green-400' : 'text-amber-400')}>{wsTok ? 'issued in this tab — goes in the file' : 'not in this tab — placeholder in the file'}</span>
+          </span>
+          {canRotateWs ? (
+            <Button size="sm" onClick={() => setRotating('ws')}>
+              Rotate workspace token
+            </Button>
+          ) : (
+            <span />
+          )}
         </div>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <span className="text-xs font-medium text-zinc-300">{h === 'REST' ? 'Environment for REST calls' : `${h} · MCP server entry`}</span>
-          <Button variant="primary" size="sm" onClick={download}>
-            Download config
+          <Button variant={missing.length ? 'secondary' : 'primary'} size="sm" onClick={download}>
+            {missing.length ? `Download template — missing ${missing.length === 2 ? '2 tokens' : `the ${missing[0]}`}` : 'Download config'}
           </Button>
         </div>
+        {template && missing.length > 0 && (
+          <Callout tone="amber">
+            That file is a template: it has {missing.map((x) => `<${x === 'agent token' ? 'AGENT_TOKEN' : 'WORKSPACE_TOKEN'}>`).join(' and ')} where the {missing.join(' and ')} go{missing.length === 1 ? 'es' : ''}. As-is, {a.label} gets 401. Paste the token{missing.length === 1 ? '' : 's'} you stored, or rotate {missing.length === 1 ? 'it' : 'them'} above and download again.
+          </Callout>
+        )}
         <Masked text={preview.text} masks={[maskA, maskW]} />
         <div className="text-xs2 text-zinc-500">
           {agentTok && wsTok ? 'Both tokens were issued in this session, so the downloaded file has them filled in. On screen they stay masked.' : 'Tokens are shown once, when issued. The file has placeholders for any token not issued in this session — paste the ones you stored, or rotate to get new ones.'}{' '}
@@ -618,14 +653,52 @@ export function WsConnect() {
             <div>
               <div className="text-[13px] font-semibold">{waiting ? `Waiting for ${a.label} to connect…` : `${a.label} isn’t connected`}</div>
               <div className="mt-0.5 text-xs text-zinc-500">{queued ? `${plural(queued, 'message')} queued for it — delivered the moment it connects.` : 'Nothing queued for it yet.'}</div>
-              {!waiting && a.status === 'active' && (
+              {!waiting && a.status === 'active' && !missing.length && (
                 <button className="mt-2 text-xs text-signal hover:text-signal-light" onClick={() => actions.connectAgent(a.id)}>
                   Simulate the agent connecting
                 </button>
               )}
+              {!waiting && a.status === 'active' && missing.length > 0 && (
+                <div className="mt-2 text-xs text-zinc-500">
+                  This tab doesn’t hold its {missing.join(' or ')}, so a downloaded file can’t connect it.{' '}
+                  <button className="text-zinc-400 underline decoration-dotted hover:text-zinc-200" onClick={() => actions.connectAgent(a.id)}>
+                    Prototype: simulate it connecting with tokens stored elsewhere
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
+        <ImpactDialog
+          open={!!rotating}
+          onClose={() => setRotating(null)}
+          title={rotating === 'agent' ? `Rotate ${a.label}’s agent token?` : `Rotate ${a.label}’s workspace token for ${w.name}?`}
+          rows={
+            rotating === 'agent'
+              ? [
+                  ['Current token', `${maskA} — keeps working for 10 minutes`, 'amber'],
+                  ['Affects', `Every workspace ${a.label} is in — it’s the same agent token everywhere`],
+                  ['Workspace tokens', 'Unchanged'],
+                ]
+              : [
+                  ['Current token', `${maskW} — keeps working for 10 minutes`, 'amber'],
+                  ['Affects', `${a.label} in ${w.name} only`],
+                  ['Agent token', 'Unchanged'],
+                ]
+          }
+          body="The new token is shown once, and this page puts it in the downloaded file."
+          confirmLabel="Rotate token"
+          onConfirm={() => {
+            if (rotating === 'agent') {
+              const t = actions.rotateAgentToken(a.id)
+              if (t) showSecret({ kind: 'token', title: 'Agent token rotated', token: t, subtitle: `${a.label} · ${a.id}`, note: 'The old token keeps working for 10 minutes. Download the config again to get a file with it.' })
+            } else {
+              const t = actions.rotateMemberToken(w.id, a.id)
+              if (t) showWsToken(w, a.id, t, 'Workspace token rotated', 'The old token keeps working for 10 minutes. Download the config again to get a file with it.')
+            }
+            setTemplate(false)
+          }}
+        />
         <Card className="p-4 text-xs2 leading-relaxed text-zinc-500">
           <div className="mb-1 flex items-center gap-2 font-semibold text-zinc-300">
             <KeyholeIcon size={12} /> Two credentials, two flows
