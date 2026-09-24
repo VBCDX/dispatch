@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { Button, cx } from './ui'
 
 /* ------------------------------------------------------------------ */
-/* Keyhole status icon — the one signature flourish.                  */
+/* Credential glyph shared with Keyhole — marks where a secret is near. */
 /* open: outline (waiting), closed: filled + turns (success).         */
 /* ------------------------------------------------------------------ */
 export function KeyholeIcon({

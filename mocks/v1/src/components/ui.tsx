@@ -355,7 +355,7 @@ export function ErrorBox({ what, onRetry }: { what: string; onRetry: () => void 
     <div className="flex items-center justify-between gap-4 rounded-[10px] border border-red-500/30 bg-red-500/[0.04] px-4 py-3.5">
       <div>
         <div className="text-[13px] font-semibold text-red-400">Couldn’t load {what}</div>
-        <div className="mt-0.5 text-xs text-zinc-400">The request to Keyhole timed out after 10 s. Nothing was changed.</div>
+        <div className="mt-0.5 text-xs text-zinc-400">The request to Dispatch timed out after 10 s. Nothing was changed.</div>
       </div>
       <Button size="sm" onClick={onRetry}>
         Retry
