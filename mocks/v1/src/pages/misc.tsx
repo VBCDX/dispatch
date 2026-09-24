@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ago, initials, plural } from '../lib/format'
-import { actions, isExpired, isOnline, me, myWorkspaces, org, orgAgents, orgEvents, principalName, useDB, useNow, wsById } from '../lib/store'
+import { actions, iAmActive, isExpired, isOnline, isOrgAdmin, me, myWorkspaces, org, orgAgents, orgEvents, principalName, useDB, useNow, wsById } from '../lib/store'
 import { DispatchMark } from '../components/credential'
-import { receiptCounts } from '../components/messages'
+import { fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, LogFeed, PrincipalChip, Tag } from '../components/shared'
 import { Avatar, Button, Card, CloseX, Field, Input, PageTitle, Toggle, cx } from '../components/ui'
 
@@ -20,9 +20,9 @@ function Checklist() {
     { t: 'Create a workspace', sub: 'A permission space: who reads, who writes, who’s blocked — and a full audit', done: ws.length > 0, to: '/workspaces?new=1' },
     { t: 'Register two agents', sub: 'Different harnesses are fine — say Claude Code and Codex', done: agents.length >= 2, to: '/agents?new=1' },
     { t: 'Add them to the workspace', sub: 'Each gets its own workspace token', done: !!withAgents, to: target ? `/workspaces/${target.id}/members` : '/workspaces' },
-    { t: 'Send a message to the workspace', sub: 'Address all agents or just some. It waits for anyone not connected yet', done: d.messages.some((m) => m.author.kind === 'human'), to: target ? `/workspaces/${target.id}/messages` : '/workspaces' },
+    { t: 'Send a message to the workspace', sub: 'Address all agents or just some. It waits for anyone not connected yet', done: d.messages.some((m) => ws.some((w) => w.id === m.wsId) && m.author.kind === 'human'), to: target ? `/workspaces/${target.id}/messages` : '/workspaces' },
     { t: 'Connect an agent', sub: 'Download its MCP or REST config — queued messages arrive the moment it connects', done: agents.some((a) => a.connected), to: target ? `/workspaces/${target.id}/connect` : '/workspaces' },
-    { t: 'Watch it get read and acknowledged', sub: 'Receipts are tracked per agent', done: d.messages.some((m) => Object.values(m.receipts).some((r) => r.ackAt)), to: target ? `/workspaces/${target.id}/messages` : '/workspaces' },
+    { t: 'Watch it get read and acknowledged', sub: 'Receipts are tracked per agent', done: d.messages.some((m) => ws.some((w) => w.id === m.wsId) && Object.values(m.receipts).some((r) => r.ackAt)), to: target ? `/workspaces/${target.id}/messages` : '/workspaces' },
   ]
   const next = steps.findIndex((s) => !s.done)
   return (
@@ -78,7 +78,7 @@ export function Home() {
   const events = orgEvents(d).filter((e) => !e.wsId || ws.has(e.wsId))
   const day = msgs.filter((m) => now - m.createdAt < 86_400_000).length
   const waiting = msgs.filter((m) => !isExpired(m, now) && receiptCounts(m).total > receiptCounts(m).acked).length
-  const failing = msgs.filter((m) => m.webhook?.mode === 'fire' && m.webhook.attempts.length && m.webhook.attempts[m.webhook.attempts.length - 1].status >= 300).length
+  const failing = msgs.filter((m) => ['retrying', 'gave up'].includes(fireSummary(m, now, (id) => id)?.short ?? '')).length
   const blocked = events.filter((e) => e.severity === 'blocked' && now - e.at < 86_400_000).length
   const agents = orgAgents(d).filter((a) => a.status === 'active')
   const online = agents.filter(isOnline).length
@@ -251,12 +251,17 @@ export function SearchPage() {
 export function AuditPage() {
   const d = useDB()
   const ids = new Set(myWorkspaces(d).map((w) => w.id))
+  // Owners and org admins audit the whole org, deleted workspaces included; members see their workspaces.
+  const all = isOrgAdmin(d)
   return (
     <div className="max-w-[1120px]">
       <PageTitle>Audit</PageTitle>
-      <div className="mt-1 text-sm2 text-zinc-500">Messages, per-agent receipts, webhook calls, access decisions and admin changes — including changes made by agents with delegated admin.</div>
+      <div className="mt-1 text-sm2 text-zinc-500">
+        Messages, per-agent receipts, webhook calls, access decisions and admin changes — including changes made by agents with delegated admin.
+        {all ? ' You see the whole organization, including workspaces that were deleted.' : ' You see the workspaces you belong to.'}
+      </div>
       <div className="mt-4">
-        <AuditLog events={orgEvents(d).filter((e) => !e.wsId || ids.has(e.wsId))} />
+        <AuditLog events={orgEvents(d).filter((e) => all || !e.wsId || ids.has(e.wsId))} />
       </div>
     </div>
   )
@@ -293,7 +298,7 @@ export function MySettings() {
           <Field label="Name">
             <div className="flex gap-2">
               <Input value={name} onChange={(e) => setName(e.target.value)} className="bg-rail" />
-              <Button disabled={!name.trim() || name === u.name} onClick={() => actions.renameMe(name.trim())}>
+              <Button disabled={!iAmActive(d) || !name.trim() || name === u.name} onClick={() => actions.renameMe(name.trim())}>
                 Save
               </Button>
             </div>
@@ -330,7 +335,7 @@ export function AccountSettings() {
         <Field label="Organization name">
           <div className="flex gap-2">
             <Input value={name} onChange={(e) => setName(e.target.value)} className="bg-rail" />
-            <Button disabled={!name.trim() || name === o.name} onClick={() => actions.renameOrg(name)}>
+            <Button disabled={!isOrgAdmin(d) || !name.trim() || name === o.name} onClick={() => actions.renameOrg(name)}>
               Rename
             </Button>
           </div>

@@ -1,4 +1,5 @@
-export type OrgRole = 'Owner' | 'orgAdmin' | 'member'
+/** Organization roles, shared across the VBCDX suite. Owners and userAdmins administer every workspace. */
+export type OrgRole = 'Owner' | 'userAdmin' | 'user'
 
 export interface Org {
   id: string
@@ -6,12 +7,18 @@ export interface Org {
   createdAt: number
 }
 
+export type PersonStatus = 'active' | 'invited' | 'suspended'
+
 export interface Human {
   id: string
   name: string
   email: string
+  /** Per organization: the person's role there… */
   roles: Record<string, OrgRole>
-  status: 'active' | 'invited' | 'suspended'
+  /** …and their status there. Suspension is per org membership: suspended in one org, a person still works in another. */
+  orgStatus: Record<string, PersonStatus>
+  /** While suspended in an org, the status they had before — Resume restores it (an invitee stays invited). */
+  suspendedFrom?: Record<string, PersonStatus>
   lastActive: number | null
   sessions: { device: string; place: string; at: number }[]
 }
@@ -35,9 +42,14 @@ export interface Agent {
   harness: Harness
   description: string
   tokenLast4: string
+  /** After a rotation the previous token keeps working until prevTokenUntil. */
+  prevTokenLast4?: string
+  prevTokenUntil?: number
   status: 'active' | 'suspended' | 'revoked'
   createdAt: number
+  /** Who registered it — kept for audit only. Agents belong to the organization, not to their creator. */
   createdBy: string
+  createdById?: string
   lastSeen: number | null
   /** Holding an open connection (MCP session or polling the REST API). Offline agents' messages wait, queued. */
   connected: boolean
@@ -47,6 +59,8 @@ export interface Agent {
 export type MemberRole = 'admin' | 'member'
 export type PrincipalKind = 'human' | 'agent'
 export type Principal = { kind: PrincipalKind; id: string }
+/** Who wrote a message: a member, or an outside system calling a message's listener (never an agent or human). */
+export type Author = Principal | { kind: 'webhook'; id: string; from: string }
 
 export interface Membership {
   kind: PrincipalKind
@@ -57,10 +71,16 @@ export interface Membership {
   /** Per-membership workspace token (agents only) — last four only. */
   tokenLast4?: string
   tokenRevoked?: boolean
+  /** After a rotation the previous workspace token keeps working until prevTokenUntil (10 minutes). */
+  prevTokenLast4?: string
+  prevTokenUntil?: number
+  /** Who added it and who delegated admin — audit only; neither owns the membership, and both stand if that person loses access. */
   addedBy: string
+  addedById?: string
   addedAt: number
   /** Set when admin was delegated, names who delegated it. */
   delegatedBy?: string
+  delegatedById?: string
 }
 
 export interface Workspace {
@@ -84,6 +104,18 @@ export interface Receipt {
   ackAt?: number
   /** Not delivered because of a filter — says which one. */
   filtered?: string
+  /** Set when the receipt was filtered after the message was sent (a final refusal while it was still queued). */
+  filteredAt?: number
+  filteredCause?: string
+  /** Queued but held: a reversible refusal (suspended, read off). Re-checked at delivery, then delivered or filtered. */
+  held?: string
+  heldCause?: string
+  heldAt?: number
+  /**
+   * Access was removed after this receipt was delivered. The receipt keeps what
+   * it recorded (delivered, read, acknowledged); this is only a note.
+   */
+  removed?: { at: number; reason: string; final: boolean; cause: string }
 }
 
 export type FireTrigger = 'send' | 'all-read' | 'all-ack'
@@ -114,8 +146,16 @@ export type Webhook =
       trigger: FireTrigger
       authUser: string
       authSet: boolean
+      /** When the trigger was met and the first attempt made. */
       firedAt?: number
       attempts: WebhookAttempt[]
+      /** A failed attempt schedules the next one (30 s, 2 min, 10 min). */
+      nextAttemptAt?: number
+      /** Terminal states. Absent while waiting for the trigger or retrying. */
+      outcome?: 'delivered' | 'gave-up' | 'no-targets' | 'expired' | 'target-lost'
+      outcomeAt?: number
+      /** Targets that could no longer receive the message before meeting the trigger — why it won't fire. */
+      dropped?: { agentId: string; cause: string; reason: string; at: number }[]
     }
   | {
       mode: 'listen'
@@ -128,7 +168,7 @@ export type Webhook =
 export interface Message {
   id: string
   wsId: string
-  author: Principal
+  author: Author
   body: string
   payload?: string
   tags: string[]
@@ -139,8 +179,8 @@ export interface Message {
   receipts: Record<string, Receipt>
   webhook?: Webhook
   trk: string
-  /** Appended by a webhook listener call. */
-  viaWebhook?: boolean
+  /** Sent from the API console: a human used the author agent's credentials. */
+  sentVia?: { channel: 'api-console'; humanId: string }
 }
 
 export interface ContextNote {
@@ -167,6 +207,8 @@ export interface AuditEvent {
   actor: string
   actorKind: 'human' | 'agent' | 'webhook' | 'system'
   actorId?: string
+  /** A human sent this with the agent's credentials from the API console. */
+  viaHumanId?: string
   object: string
   result: string
   trk: string
@@ -184,6 +226,8 @@ export interface DB {
   humans: Human[]
   agents: Agent[]
   workspaces: Workspace[]
+  /** Tombstones: a deleted workspace's audit rows keep resolving to its name. */
+  deletedWorkspaces: { id: string; orgId: string; name: string; deletedAt: number; deletedBy: string }[]
   messages: Message[]
   notes: ContextNote[]
   events: AuditEvent[]

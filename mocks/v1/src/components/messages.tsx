@@ -1,24 +1,27 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { audienceLabel, filteredReason, targets } from '../lib/access'
+import { accessVerdict, audienceLabel, targets } from '../lib/access'
 import { ago, clock, maskHookPassword, plural, until } from '../lib/format'
-import { actions, agentById, canPost, isExpired, isOnline, orgEvents, principalName, receiptState, useDB, useNow, type ReceiptState } from '../lib/store'
+import { actions, agentById, canAdmin, canPost, fireState, isExpired, MAX_ATTEMPTS, mayExpire, isOnline, orgEvents, principalName, receiptState, useDB, useNow, type ReceiptState } from '../lib/store'
 import type { Audience, FireTrigger, Message, Workspace } from '../lib/types'
-import { CopyChip, KeyholeIcon, SECRET_LINE, SecretField } from './credential'
-import { LogRow, PrincipalChip, Tag } from './shared'
-import { Button, Callout, Checkbox, Field, Footer, Input, Modal, Pill, Segmented, Select, SlideOver, Textarea, Toggle, cx } from './ui'
+import { CopyChip, SECRET_LINE, SecretField } from './credential'
+import { showSecret } from '../lib/secrets'
+import { ImpactDialog, LogRow, PrincipalChip, Tag } from './shared'
+import { Button, Callout, Checkbox, Field, Footer, Input, Pill, Segmented, Select, SlideOver, Textarea, Toggle, cx } from './ui'
 
 /* ------------------------------------------------------------------ */
 /* Receipts — tracked per agent                                        */
 /* ------------------------------------------------------------------ */
 const STATE_STYLE: Record<ReceiptState, string> = {
   queued: 'border-zinc-700 text-zinc-500 border-dashed',
+  expired: 'border-zinc-800 text-zinc-500 border-dashed',
+  held: 'border-amber-500/40 text-amber-400 border-dashed',
   delivered: 'border-zinc-600 text-zinc-300 bg-line',
   read: 'border-signal/40 text-signal-light bg-signal/10',
   acked: 'border-green-500/40 text-green-400 bg-green-500/10',
   filtered: 'border-zinc-800 text-zinc-600 line-through',
 }
-const STATE_LABEL: Record<ReceiptState, string> = { queued: 'Queued', delivered: 'Delivered', read: 'Read', acked: 'Acknowledged', filtered: 'Filtered' }
+const STATE_LABEL: Record<ReceiptState, string> = { queued: 'Queued', delivered: 'Delivered', read: 'Read', acked: 'Acknowledged', filtered: 'Filtered', expired: 'Never delivered', held: 'Held' }
 
 export function ReceiptPills({ m, max = 8 }: { m: Message; max?: number }) {
   const d = useDB()
@@ -26,10 +29,10 @@ export function ReceiptPills({ m, max = 8 }: { m: Message; max?: number }) {
   return (
     <span className="flex flex-wrap items-center gap-1">
       {entries.slice(0, max).map(([id, r]) => {
-        const s = receiptState(r)
+        const s = receiptState(r, m)
         const a = agentById(d, id)
         return (
-          <span key={id} title={`${a?.label}: ${STATE_LABEL[s]}${r.filtered ? ` — ${r.filtered}` : ''}`} className={cx('rounded border px-1.5 py-px font-mono text-[10.5px]', STATE_STYLE[s])}>
+          <span key={id} title={`${a?.label}: ${STATE_LABEL[s]}${r.filtered ? ` — ${r.filtered}` : r.held ? ` — ${r.held}` : r.removed ? ` — access removed at ${clock(r.removed.at)}: ${r.removed.reason}` : ''}`} className={cx('rounded border px-1.5 py-px font-mono text-[10.5px]', STATE_STYLE[s])}>
             {a?.label ?? id}
             {s === 'acked' ? ' ✓✓' : s === 'read' ? ' ✓' : ''}
           </span>
@@ -40,21 +43,67 @@ export function ReceiptPills({ m, max = 8 }: { m: Message; max?: number }) {
   )
 }
 
-export function receiptCounts(m: Message) {
+export function receiptCounts(m: Message, now = Date.now()) {
   const rs = Object.values(m.receipts).filter((r) => !r.filtered)
-  return { total: rs.length, delivered: rs.filter((r) => r.deliveredAt).length, read: rs.filter((r) => r.readAt).length, acked: rs.filter((r) => r.ackAt).length, filtered: Object.values(m.receipts).length - rs.length }
+  const expired = isExpired(m, now)
+  return { total: rs.length, delivered: rs.filter((r) => r.deliveredAt).length, read: rs.filter((r) => r.readAt).length, acked: rs.filter((r) => r.ackAt).length, filtered: Object.values(m.receipts).length - rs.length, expired, neverDelivered: expired ? rs.filter((r) => !r.deliveredAt).length : 0 }
+}
+
+/** One line for where a fire webhook stands — the same words on the card, the drawer and the Webhooks tab. */
+export function fireSummary(m: Message, now: number, name: (id: string) => string): { tone: 'neutral' | 'green' | 'amber' | 'red'; short: string; long: string } | null {
+  const s = fireState(m, now)
+  if (!s || m.webhook?.mode !== 'fire') return null
+  const verb = m.webhook.trigger === 'all-read' ? 'read' : 'acknowledge'
+  switch (s.k) {
+    case 'waiting':
+      return {
+        tone: 'neutral',
+        short: 'waiting',
+        long:
+          m.webhook.trigger === 'send'
+            ? 'Firing…'
+            : `Not fired yet — waiting for ${s.pending.map((id) => `${name(id)}${s.held.includes(id) ? ` (held — ${m.receipts[id]?.heldCause ?? m.receipts[id]?.removed?.cause})` : ''}`).join(', ')} to ${verb} it (${s.total - s.pending.length} of ${s.total} done). A refusal never counts as completion.`,
+      }
+    case 'target-lost':
+      return { tone: 'red', short: 'won’t fire', long: `Won’t fire: ${s.dropped.map((x) => `${name(x.agentId)} can no longer receive it (${x.cause})`).join('; ')}. A refusal never counts as ${verb === 'read' ? 'reading' : 'acknowledging'}.` }
+    case 'delivered':
+      return { tone: 'green', short: '200', long: `Delivered on attempt ${s.attempt} at ${clock(s.at)}.` }
+    case 'retrying': {
+      const secs = Math.max(0, Math.round((s.next - now) / 1000))
+      return { tone: 'amber', short: 'retrying', long: `Failing — attempt ${s.attempt} of ${MAX_ATTEMPTS} at ${clock(s.next)}${secs ? ` (in ${secs < 90 ? `${secs} s` : `${Math.round(secs / 60)} min`})` : ' (due now)'}.` }
+    }
+    case 'gave-up':
+      return { tone: 'red', short: 'gave up', long: `Gave up after ${s.attempts} attempts. Nothing more is scheduled; Retry now calls it once more.` }
+    case 'no-targets':
+      return { tone: 'neutral', short: 'won’t fire', long: 'Won’t fire: no deliverable targets. Every addressed agent was filtered, so nobody can meet the trigger.' }
+    case 'expired':
+      return { tone: 'neutral', short: 'won’t fire', long: s.attempts ? `Stopped: the message expired after ${s.attempts} failed attempt${s.attempts === 1 ? '' : 's'}. Nothing fires after expiry.` : 'Won’t fire: the message expired before its trigger was met.' }
+  }
 }
 
 function WebhookBadge({ m }: { m: Message }) {
+  const d = useDB()
+  const now = useNow(5000)
   const h = m.webhook
   if (!h) return null
   if (h.mode === 'fire') {
-    const last = h.attempts[h.attempts.length - 1]
+    const f = fireSummary(m, now, (id) => agentById(d, id)?.label ?? id)!
     const trig = { send: 'on send', 'all-read': 'when all read', 'all-ack': 'when all ack' }[h.trigger]
-    return <Pill tone={!last ? 'neutral' : last.status < 300 ? 'green' : 'amber'}>⇢ fire {trig}{last ? ` · ${last.status}` : ' · waiting'}</Pill>
+    return <Pill tone={f.tone}>⇢ fire {trig} · {f.short}</Pill>
   }
   const open = !isExpired(m)
   return <Pill tone={open ? 'blue' : 'neutral'}>⇠ listening{open ? '' : ' · closed'} · {plural(h.calls.length, 'call')}</Pill>
+}
+
+/** Marks a message a human sent from the API console with an agent's credentials. */
+function ConsolePill({ humanId }: { humanId: string }) {
+  const d = useDB()
+  const name = d.humans.find((h) => h.id === humanId)?.name ?? humanId
+  return (
+    <span title={`${name} sent this from the API console with the agent’s credentials`}>
+      <Pill className="!py-0">via API console · {name}</Pill>
+    </span>
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -63,7 +112,7 @@ function WebhookBadge({ m }: { m: Message }) {
 export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Message; onOpen: () => void; replies: number; onTag?: (t: string) => void; activeTags?: string[] }) {
   const d = useDB()
   const now = useNow(10_000)
-  const c = receiptCounts(m)
+  const c = receiptCounts(m, now)
   const expired = isExpired(m, now)
   const soon = !expired && m.expiresAt && m.expiresAt - now < 2 * 3_600_000
   return (
@@ -71,7 +120,8 @@ export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Mess
       <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <PrincipalChip p={m.author} />
         {m.author.kind === 'human' && <Pill className="!py-0">human</Pill>}
-        {m.viaWebhook && <Pill tone="blue" className="!py-0">via listener</Pill>}
+        {m.author.kind === 'webhook' && <Pill tone="blue" className="!py-0">via listener</Pill>}
+        {m.sentVia && <ConsolePill humanId={m.sentVia.humanId} />}
         <span className="text-xs text-zinc-600">→</span>
         <span className="text-xs text-zinc-400">{audienceLabel(d, m.audience)}</span>
         <span className="ml-auto flex items-center gap-2 text-xs text-zinc-500">
@@ -100,7 +150,9 @@ export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Mess
       {c.total + c.filtered > 0 && (
         <button type="button" onClick={onOpen} className="mt-2.5 flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-line pt-2.5 text-left">
           <span className="text-xs text-zinc-500">
+            {c.expired && <span>Expired · </span>}
             Read by <span className="text-zinc-300">{c.read}</span> of {c.total} · acked <span className="text-zinc-300">{c.acked}</span>
+            {c.neverDelivered > 0 && <span> · {c.neverDelivered} never delivered</span>}
             {c.filtered > 0 && <span> · {c.filtered} filtered</span>}
           </span>
           <ReceiptPills m={m} />
@@ -121,6 +173,7 @@ export function AudiencePicker({ ws, value, onChange }: { ws: Workspace; value: 
     <div className="flex flex-col gap-2">
       <Segmented
         size="sm"
+        label="Audience"
         value={value.mode}
         onChange={(mode) => onChange(mode === 'all' ? { mode } : { mode, agentIds: ids })}
         options={[
@@ -151,11 +204,20 @@ export function AudiencePicker({ ws, value, onChange }: { ws: Workspace; value: 
   )
 }
 
-export function TagInput({ value, onChange, suggestions }: { value: string[]; onChange: (t: string[]) => void; suggestions: string[] }) {
-  const [draft, setDraft] = useState('')
+const cleanTag = (t: string) => t.trim().replace(/^#/, '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
+/** The tags plus whatever is still typed in the field — so a tag typed but not yet entered is never dropped. */
+export function withDraftTag(tags: string[], draft: string) {
+  const c = cleanTag(draft)
+  return c && !tags.includes(c) ? [...tags, c] : tags
+}
+
+/** Tag chips. Pass draft/onDraft to own the typed text, and commit it with withDraftTag() on submit. */
+export function TagInput({ value, onChange, suggestions, draft: draftProp, onDraft }: { value: string[]; onChange: (t: string[]) => void; suggestions: string[]; draft?: string; onDraft?: (s: string) => void }) {
+  const [ownDraft, setOwnDraft] = useState('')
+  const draft = draftProp ?? ownDraft
+  const setDraft = onDraft ?? setOwnDraft
   const add = (t: string) => {
-    const clean = t.trim().replace(/^#/, '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
-    if (clean && !value.includes(clean)) onChange([...value, clean])
+    onChange(withDraftTag(value, t))
     setDraft('')
   }
   const sugg = suggestions.filter((s) => !value.includes(s) && s.includes(draft.toLowerCase())).slice(0, 8)
@@ -184,6 +246,7 @@ export function TagInput({ value, onChange, suggestions }: { value: string[]; on
           aria-label="Tags"
           className="min-w-24 flex-1 bg-transparent font-mono text-xs text-zinc-200 outline-none placeholder:font-sans placeholder:text-zinc-600"
         />
+        {cleanTag(draft) && !value.includes(cleanTag(draft)) && <span className="text-2xs whitespace-nowrap text-zinc-500">↵ adds #{cleanTag(draft)} · kept on send</span>}
       </div>
       {sugg.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -209,6 +272,15 @@ const EXPIRY: [string, number | null][] = [
   ['No expiry', null],
 ]
 
+function jsonError(text: string) {
+  try {
+    JSON.parse(text)
+    return null
+  } catch (e) {
+    return (e as Error).message.replace(/^JSON\.parse: /, '').replace(/^Unexpected token/, 'unexpected token')
+  }
+}
+
 export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; parent?: Message; onSent?: (id: string) => void; compact?: boolean }) {
   const d = useDB()
   const [open, setOpen] = useState(!!parent || !compact)
@@ -216,6 +288,7 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
   const [payload, setPayload] = useState('')
   const [showPayload, setShowPayload] = useState(false)
   const [tags, setTags] = useState<string[]>(parent?.tags ?? [])
+  const [tagDraft, setTagDraft] = useState('')
   const [audience, setAudience] = useState<Audience>(parent?.audience ?? { mode: 'all' })
   const [expiry, setExpiry] = useState<string>(String(ws.defaultExpiryHours ?? 'none'))
   const [hookOn, setHookOn] = useState(false)
@@ -225,78 +298,56 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
   const [authUser, setAuthUser] = useState('dispatch')
   const [pwLen, setPwLen] = useState(0)
   const [nonce, setNonce] = useState(0)
-  const [issued, setIssued] = useState<{ url: string; user: string; password: string } | null>(null)
+  const [sendAnyway, setSendAnyway] = useState(false)
   const allTags = useMemo(() => Array.from(new Set(d.messages.filter((m) => m.wsId === ws.id).flatMap((m) => m.tags))).sort(), [d.messages, ws.id])
 
   const preview = useMemo(() => {
     const draft = { audience, author: { kind: 'human' as const, id: d.currentUserId } }
     const ids = targets(ws, draft)
-    const filtered = ids.map((id) => ({ id, why: filteredReason(d, ws, draft, agentById(d, id)!) })).filter((x) => x.why)
-    const offline = ids.filter((id) => !filtered.some((f) => f.id === id) && !isOnline(agentById(d, id)!))
-    return { total: ids.length, filtered, offline }
+    const verdicts = ids.map((id) => ({ id, v: accessVerdict(d, ws, draft, agentById(d, id)!) }))
+    const filtered = verdicts.filter((x) => x.v?.final).map((x) => ({ id: x.id, why: x.v!.reason }))
+    const held = verdicts.filter((x) => x.v && !x.v.final).map((x) => ({ id: x.id, why: x.v!.reason }))
+    const offline = verdicts.filter((x) => !x.v && !isOnline(agentById(d, x.id)!)).map((x) => x.id)
+    return { total: ids.length, filtered, held, offline }
   }, [d, ws, audience])
 
   const expiryHours = expiry === 'none' ? null : Number(expiry)
   const needsExpiry = hookOn && hookMode === 'listen' && !expiryHours
   const badUrl = hookOn && hookMode === 'fire' && !/^https:\/\/\S+\.\S+/.test(url)
   const allowed = canPost(d, ws)
-  const ok = allowed && body.trim() && (audience.mode === 'all' || audience.agentIds.length) && !needsExpiry && !badUrl
+  const reachable = preview.total - preview.filtered.length
+  const deadHook = hookOn && hookMode === 'fire' && trigger !== 'send' && reachable === 0
+  const payloadError = showPayload && payload.trim() ? jsonError(payload) : null
+  const needsUser = hookOn && !authUser.trim() && (hookMode === 'listen' || pwLen > 0)
+  const hasAgents = ws.members.some((m) => m.kind === 'agent')
+  // Agents are here but the audience and filters leave nobody: say so, and make sending a deliberate choice.
+  const nobody = hasAgents && (audience.mode === 'all' || audience.agentIds.length > 0) && reachable === 0
+  const ok = allowed && body.trim() && (audience.mode === 'all' || audience.agentIds.length) && !needsExpiry && !badUrl && !deadHook && !payloadError && !needsUser && (!nobody || sendAnyway)
 
   const send = () => {
     const res = actions.postMessage({
       wsId: ws.id,
       body: body.trim(),
-      payload: showPayload ? payload : undefined,
-      tags,
+      payload: showPayload && payload.trim() ? payload : undefined,
+      tags: withDraftTag(tags, tagDraft),
       audience,
       expiresInHours: expiryHours,
       parentId: parent?.id,
       webhook: hookOn ? (hookMode === 'fire' ? { mode: 'fire', url, trigger, authUser, authSet: pwLen > 0 } : { mode: 'listen', authUser }) : undefined,
     })
-    if (res.hookPassword && res.listenUrl) setIssued({ url: res.listenUrl, user: authUser, password: res.hookPassword })
+    if (res.hookPassword && res.listenUrl) showSecret({ kind: 'listener', title: 'Listener created', url: res.listenUrl, user: authUser, password: res.hookPassword })
     setBody('')
     setPayload('')
     setShowPayload(false)
     setHookOn(false)
     setPwLen(0)
+    setSendAnyway(false)
+    setTagDraft('')
     setNonce((n) => n + 1)
     if (!parent) setTags([])
     onSent?.(res.id)
     if (compact) setOpen(false)
   }
-
-  const credential = (
-  <Modal open={!!issued} onClose={() => {}} width={560} dismissable={false}>
-    {issued && (
-      <>
-        <div className="flex items-center gap-2.5">
-          <KeyholeIcon state="closed" size={18} turn />
-          <div className="text-[15px] font-semibold">Listener created</div>
-        </div>
-        <div className="text-sm2 text-zinc-400">Give these to the outside system. Calls are appended to the message until it expires.</div>
-        <div className="flex flex-col gap-3 rounded-[10px] border border-brass/35 bg-brass/[0.06] p-5">
-          <Field label="URL">
-            <CopyChip variant="block" value={issued.url} />
-          </Field>
-          <Field label="User">
-            <CopyChip variant="block" value={issued.user} />
-          </Field>
-          <div>
-            <div className="text-2xs font-semibold tracking-[0.08em] text-brass uppercase">Password — shown once</div>
-            <div className="mt-2 font-mono text-base tracking-[0.06em] break-all text-brass-pale select-all">{issued.password}</div>
-            <div className="mt-2">
-              <CopyChip variant="block" value={issued.password} display="Copy password" />
-            </div>
-          </div>
-          <div className="text-center text-xs text-brass">Store this now — it won't be shown again.</div>
-        </div>
-        <Button className="w-full py-2.5" onClick={() => setIssued(null)}>
-          I've stored it
-        </Button>
-      </>
-    )}
-  </Modal>
-  )
 
   if (!allowed) return <Callout tone="neutral">You can read and search this workspace, but your membership doesn’t include writing.</Callout>
   if (!open)
@@ -305,7 +356,6 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
         <button type="button" onClick={() => setOpen(true)} className="w-full rounded-[10px] border border-edge bg-panel px-4 py-3 text-left text-[13px] text-zinc-500 hover:border-zinc-700 hover:text-zinc-300">
           Write to {ws.name}…
         </button>
-        {credential}
       </>
     )
 
@@ -320,13 +370,18 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
         placeholder={parent ? 'Reply in thread…' : `Message ${ws.name} — addressed to the workspace, delivered to agents even if they aren’t connected yet`}
         className="bg-page"
       />
-      {showPayload && <Textarea rows={3} value={payload} onChange={(e) => setPayload(e.target.value)} placeholder='{ "json": "payload" }' className="bg-page font-mono text-xs" />}
+      {showPayload && (
+        <div className="flex flex-col gap-1">
+          <Textarea rows={3} value={payload} onChange={(e) => setPayload(e.target.value)} placeholder='{ "json": "payload" }' aria-label="Payload (JSON)" aria-invalid={!!payloadError} className={cx('bg-page font-mono text-xs', payloadError && 'border-red-500/60 focus:border-red-500')} />
+          {payloadError && <div className="text-xs2 text-red-400">Not valid JSON — {payloadError}. Agents parse this; fix it or clear the payload to send.</div>}
+        </div>
+      )}
       <div className="grid grid-cols-[1fr_1fr] gap-4">
         <Field label="To">
           <AudiencePicker ws={ws} value={audience} onChange={setAudience} />
         </Field>
         <Field label="Tags" optional="filters, not channels">
-          <TagInput value={tags} onChange={setTags} suggestions={allTags} />
+          <TagInput value={tags} onChange={setTags} suggestions={allTags} draft={tagDraft} onDraft={setTagDraft} />
         </Field>
       </div>
       <div className="flex flex-wrap items-center gap-4">
@@ -351,6 +406,7 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
         <div className="flex flex-col gap-3 rounded-lg border border-edge bg-rail p-3.5">
           <Segmented
             size="sm"
+            label="Webhook mode"
             value={hookMode}
             onChange={setHookMode}
             options={[
@@ -373,20 +429,24 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
                 </Field>
               </div>
               <div className="grid grid-cols-[1fr_2fr] gap-3">
-                <Field label="Basic auth user">
-                  <Input mono value={authUser} onChange={(e) => setAuthUser(e.target.value)} />
+                <Field label="Basic auth user" error={needsUser ? 'Needed when a password is set.' : null}>
+                  <Input mono value={authUser} onChange={(e) => setAuthUser(e.target.value)} aria-invalid={needsUser} />
                 </Field>
                 <Field label="Password" optional hint={SECRET_LINE}>
                   <SecretField key={nonce} onLength={setPwLen} compact />
                 </Field>
               </div>
-              <div className="text-xs2 text-zinc-500">Fires once. Failed calls retry 3 times (30 s, 2 min, 10 min). Nothing fires after the message expires. Every attempt is logged with its status and tracking code.</div>
+              {deadHook ? (
+                <div className="text-xs2 text-amber-400">No agent can receive this message, so “{trigger === 'all-read' ? 'every target has read it' : 'every target has acked it'}” could never be met and the webhook would never fire. Fire on send, or change who it’s to.</div>
+              ) : (
+                <div className="text-xs2 text-zinc-500">Fires once. Failed calls retry 3 times (30 s, 2 min, 10 min), then give up. Filtered targets drop out of “every target”. Nothing fires after the message expires. Every attempt is logged with its status and tracking code.</div>
+              )}
             </>
           ) : (
             <>
               <div className="grid grid-cols-[1fr_2fr] items-end gap-3">
-                <Field label="Basic auth user">
-                  <Input mono value={authUser} onChange={(e) => setAuthUser(e.target.value)} />
+                <Field label="Basic auth user" error={needsUser ? 'A listener needs a user.' : null}>
+                  <Input mono value={authUser} onChange={(e) => setAuthUser(e.target.value)} aria-invalid={needsUser} />
                 </Field>
                 <div className="pb-2.5 text-xs2 text-zinc-500">A listener URL and password are created when you send. The password is shown once.</div>
               </div>
@@ -397,17 +457,31 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
           )}
         </div>
       )}
+      {nobody && (
+        <Callout tone="amber" className="flex flex-col gap-2">
+          <span>
+            No agent will receive this — {preview.total === 0 ? 'the audience leaves out every agent here' : `every addressed agent is filtered (${preview.filtered.map((f) => agentById(d, f.id)?.label).join(', ')})`}. Humans in the workspace still see it.
+          </span>
+          <Checkbox checked={sendAnyway} onChange={setSendAnyway} label={<span className="text-xs text-amber-300">Send it anyway, to humans only</span>} />
+        </Callout>
+      )}
       <div className="flex items-center justify-between gap-4">
-        <div className="text-xs text-zinc-500">
-          Reaches {plural(preview.total - preview.filtered.length, 'agent')}
+        <div className={cx('text-xs', nobody ? 'text-amber-400' : 'text-zinc-500')}>
+          {hasAgents ? <>Reaches {plural(reachable - preview.held.length, 'agent')}</> : <>No agents in {ws.name} yet</>}
           {preview.offline.length > 0 && <> · {preview.offline.length} offline — queued until they connect</>}
+          {preview.held.length > 0 && (
+            <span className="text-amber-400" title={preview.held.map((f) => `${agentById(d, f.id)?.label}: ${f.why}`).join('\n')}>
+              {' '}
+              · {preview.held.length} held until access returns ({preview.held.map((f) => agentById(d, f.id)?.label).join(', ')})
+            </span>
+          )}
           {preview.filtered.length > 0 && (
             <span className="text-amber-400" title={preview.filtered.map((f) => `${agentById(d, f.id)?.label}: ${f.why}`).join('\n')}>
               {' '}
               · {preview.filtered.length} filtered ({preview.filtered.map((f) => agentById(d, f.id)?.label).join(', ')})
             </span>
           )}
-          . Humans in the workspace always see it.
+          . {hasAgents && reachable > 0 ? 'Only they can read it among agents — inbox, search and API alike. ' : ''}Humans in the workspace always see it.
         </div>
         <div className="flex gap-2">
           {compact && (
@@ -420,7 +494,6 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
           </Button>
         </div>
       </div>
-      {credential}
     </div>
   )
 }
@@ -433,15 +506,29 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
   const now = useNow(5000)
   const m = d.messages.find((x) => x.id === msgId)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [rotating, setRotating] = useState(false)
+  const [expiring, setExpiring] = useState(false)
   useEffect(() => setExpanded(null), [msgId])
-  if (!m) return null
+  if (!msgId) return null
+  // A message opened by ID (?m=) must belong to this workspace; anything else — another workspace or another org,
+  // or an ID that doesn't exist — gets the same no-access state, without revealing where it lives.
+  if (!m || m.wsId !== ws.id)
+    return (
+      <SlideOver open onClose={onClose} width={480} title={<span className="flex items-center gap-2.5">Message <span className="font-mono text-xs font-normal text-zinc-500">{msgId}</span></span>}>
+        <div role="alert" className="text-sm2 text-zinc-400">
+          <div className="text-[13px] font-semibold text-zinc-200">You don’t have access to this message here.</div>
+          <div className="mt-1">It isn’t a message in {ws.name}. Open messages from the workspace they belong to.</div>
+        </div>
+      </SlideOver>
+    )
   const thread = d.messages.filter((x) => x.parentId === m.id).sort((a, b) => a.createdAt - b.createdAt)
   const expired = isExpired(m, now)
-  const c = receiptCounts(m)
+  const c = receiptCounts(m, now)
   const list = (key: 'deliveredAt' | 'readAt' | 'ackAt') =>
     Object.entries(m.receipts)
-      .filter(([, r]) => r[key])
+      .filter(([, r]) => r[key] && !r.filtered)
       .map(([id]) => agentById(d, id)?.label ?? id)
+  const fire = fireSummary(m, now, (id) => agentById(d, id)?.label ?? id)
   const events = orgEvents(d).filter((e) => e.object.includes(m.id) || e.trk === m.trk || (m.webhook?.mode === 'listen' && e.object.includes(m.webhook.url.split('/').pop()!)))
   const hook = m.webhook
 
@@ -449,6 +536,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
     <SlideOver open={!!msgId} onClose={onClose} width={640} title={<span className="flex items-center gap-2.5">Message <span className="font-mono text-xs font-normal text-zinc-500">{m.id}</span></span>}>
       <div className="flex flex-wrap items-center gap-2.5">
         <PrincipalChip p={m.author} withKind />
+        {m.sentVia && <ConsolePill humanId={m.sentVia.humanId} />}
         <span className="text-xs text-zinc-600">→</span>
         <span className="text-xs text-zinc-400">{audienceLabel(d, m.audience)}</span>
         <span className="ml-auto text-xs text-zinc-500">{new Date(m.createdAt).toLocaleString()}</span>
@@ -460,8 +548,8 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
           <Tag key={t} t={t} />
         ))}
         <span className={cx('text-xs', expired ? 'text-zinc-500' : 'text-zinc-400')}>{m.expiresAt ? (expired ? `Expired ${ago(m.expiresAt, now).toLowerCase()}` : `Expires ${until(m.expiresAt, now).toLowerCase()} · ${new Date(m.expiresAt).toLocaleString()}`) : 'No expiry'}</span>
-        {!expired && m.expiresAt && (
-          <button type="button" className="text-xs text-zinc-500 hover:text-red-400" onClick={() => actions.expireNow(m.id)}>
+        {!expired && mayExpire(d, m) && (
+          <button type="button" className="text-xs text-zinc-500 hover:text-red-400" onClick={() => setExpiring(true)}>
             Expire now
           </button>
         )}
@@ -469,6 +557,21 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
           <CopyChip value={m.trk} />
         </span>
       </div>
+
+      <ImpactDialog
+        open={expiring}
+        onClose={() => setExpiring(false)}
+        title={`Expire ${m.id} now?`}
+        rows={[
+          ['Author', principalName(d, m.author) + (m.author.kind === 'human' && m.author.id === d.currentUserId ? ' (you)' : '')],
+          ['Not delivered yet', `${Object.values(m.receipts).filter((r) => !r.filtered && !r.deliveredAt).length} — never will be`, Object.values(m.receipts).some((r) => !r.filtered && !r.deliveredAt) ? 'amber' : undefined],
+          ['Webhook', !hook ? 'None' : hook.mode === 'listen' ? 'Listener closes — further calls get 410' : fire?.short === 'waiting' || fire?.short === 'retrying' ? 'Won’t fire' : 'Unaffected', hook && (hook.mode === 'listen' || fire?.short === 'waiting' || fire?.short === 'retrying') ? 'amber' : undefined],
+          ['Was due to expire', m.expiresAt ? new Date(m.expiresAt).toLocaleString() : 'Never'],
+        ]}
+        body="This can’t be undone. The message stays readable and searchable, and in the audit log."
+        confirmLabel="Expire now"
+        onConfirm={() => actions.expireNow(m.id)}
+      />
 
       <section>
         <div className="eyebrow">Receipts · per agent</div>
@@ -497,7 +600,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
             ))}
           </div>
           {Object.entries(m.receipts).map(([id, r]) => {
-            const s = receiptState(r)
+            const s = receiptState(r, m, now)
             const a = agentById(d, id)
             return (
               <div key={id} className="border-b border-line px-3.5 py-2 text-xs last:border-b-0">
@@ -506,6 +609,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                   <span>
                     <span className={cx('rounded border px-1.5 py-px font-mono text-[10.5px]', STATE_STYLE[s])}>{STATE_LABEL[s]}</span>
                     {s === 'queued' && a && !isOnline(a) && <span className="ml-1.5 text-2xs text-zinc-500">offline</span>}
+                    {expired && (s === 'delivered' || s === 'read') && <span className="ml-1.5 text-2xs text-zinc-500">expired · never {s === 'delivered' ? 'read' : 'acked'}</span>}
                   </span>
                   {(['deliveredAt', 'readAt', 'ackAt'] as const).map((k) => (
                     <span key={k} className="font-mono text-zinc-500">
@@ -513,7 +617,22 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                     </span>
                   ))}
                 </div>
-                {r.filtered && <div className="mt-1 pl-[26px] text-2xs text-zinc-500">{r.filtered}</div>}
+                {r.filtered && (
+                  <div className="mt-1 pl-[26px] text-2xs text-zinc-500">
+                    {r.filteredAt && <span className="text-amber-400">Filtered at {clock(r.filteredAt)} while still queued — never delivered. </span>}
+                    {r.filtered}
+                  </div>
+                )}
+                {r.held && !expired && (
+                  <div className="mt-1 pl-[26px] text-2xs text-amber-400">
+                    Held — {r.held} Re-checked at delivery: delivered when access returns, filtered if it’s removed for good.
+                  </div>
+                )}
+                {r.removed && (
+                  <div className="mt-1 pl-[26px] text-2xs text-zinc-500">
+                    <span className="text-amber-400">Access removed at {clock(r.removed.at)}</span> — {r.removed.reason} What it already recorded stays as it is.
+                  </div>
+                )}
               </div>
             )
           })}
@@ -543,6 +662,12 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
             <span className="text-zinc-500">{hook.mode === 'listen' ? 'Open until' : 'Stops at'}</span>
             <span>{m.expiresAt ? `${new Date(m.expiresAt).toLocaleString()}${expired ? ' · closed' : ''}` : 'Never expires'}</span>
           </div>
+          {fire && (
+            <div role="status" className={cx('mt-2 text-xs', fire.tone === 'red' ? 'text-red-400' : fire.tone === 'amber' ? 'text-amber-400' : fire.tone === 'green' ? 'text-green-400' : 'text-zinc-400')}>
+              {fire.long}
+              {fire.tone === 'amber' && !d.live && <span className="text-zinc-500"> Prototype: retries run while the simulation is running.</span>}
+            </div>
+          )}
           <div className="mt-2 overflow-hidden rounded-[10px] border border-edge">
             {hook.mode === 'fire' ? (
               hook.attempts.length ? (
@@ -559,7 +684,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                   </div>
                 ))
               ) : (
-                <div className="px-3.5 py-3 text-xs text-zinc-500">Not fired yet — waiting for {hook.trigger === 'all-read' ? `${c.total - c.read} more reads` : hook.trigger === 'all-ack' ? `${c.total - c.acked} more acknowledgements` : 'send'}.</div>
+                <div className="px-3.5 py-3 text-xs text-zinc-500">No attempts.</div>
               )
             ) : hook.calls.length ? (
               hook.calls.map((call) => (
@@ -578,7 +703,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
             )}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
-            {hook.mode === 'fire' && hook.attempts.some((a) => a.status >= 300) && !hook.attempts.some((a) => a.status < 300) && (
+            {fire && (fire.short === 'retrying' || fire.short === 'gave up') && canPost(d, ws) && (
               <Button size="sm" onClick={() => actions.retryWebhook(m.id)}>
                 Retry now
               </Button>
@@ -592,9 +717,32 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                   Simulate a wrong password
                 </Button>
                 <span className="self-center text-2xs text-zinc-600">Prototype: stands in for the outside system.</span>
+                {!expired && canAdmin(d, ws) && (
+                  <Button size="sm" className="ml-auto" onClick={() => setRotating(true)}>
+                    Rotate password
+                  </Button>
+                )}
               </>
             )}
           </div>
+          {hook.mode === 'listen' && (
+            <ImpactDialog
+              open={rotating}
+              onClose={() => setRotating(false)}
+              title="Rotate the listener password?"
+              rows={[
+                ['Listener', <span key="l" className="font-mono">{hook.url.split('/').pop()}</span>],
+                ['Current password', `${maskHookPassword(hook.passwordLast4)} — stops working now`, 'amber'],
+                ['Open until', m.expiresAt ? new Date(m.expiresAt).toLocaleString() : '—'],
+              ]}
+              body="The new password is shown once. Until the outside system has it, its calls get 401 and nothing is appended."
+              confirmLabel="Rotate password"
+              onConfirm={() => {
+                const pw = actions.rotateListenerPassword(m.id)
+                if (pw) showSecret({ kind: 'listener', title: 'Listener password rotated', subtitle: 'Same URL and user. Give the new password to the outside system.', url: hook.url, user: hook.authUser, password: pw })
+              }}
+            />
+          )}
         </section>
       )}
 
@@ -605,7 +753,14 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
             <div key={r.id} className="rounded-lg border border-edge bg-rail px-3.5 py-2.5">
               <div className="flex items-center gap-2 text-xs">
                 <PrincipalChip p={r.author} size={18} />
-                {r.viaWebhook && <Pill tone="blue" className="!py-0">via listener</Pill>}
+                {r.author.kind === 'webhook' && <Pill tone="blue" className="!py-0">via listener</Pill>}
+                {r.sentVia && <ConsolePill humanId={r.sentVia.humanId} />}
+                {r.webhook && <WebhookBadge m={r} />}
+                {r.webhook && (
+                  <Link to={`/workspaces/${ws.id}/messages?m=${r.id}`} className="text-2xs" aria-label={`Open reply ${r.id} and its webhook`}>
+                    Open →
+                  </Link>
+                )}
                 <span className="ml-auto text-zinc-500">{ago(r.createdAt, now).toLowerCase()}</span>
               </div>
               <div className="mt-1.5 text-[13px] whitespace-pre-wrap text-zinc-200">{r.body}</div>

@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from 'react'
-import { Button, cx } from './ui'
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { acknowledgeSecret, pendingSecrets, subscribeSecrets } from '../lib/secrets'
+import { Button, Field, Modal, cx } from './ui'
 
 /* ------------------------------------------------------------------ */
 /* Credential glyph shared with Keyhole — marks where a secret is near. */
@@ -175,46 +176,111 @@ export function LockedDots({ dim, brass }: { dim?: boolean; brass?: boolean }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* One-time token panel.                                               */
+/* One-time secret panels.                                             */
 /* ------------------------------------------------------------------ */
-export function TokenPanel({ token, title, subtitle, note, onDone }: { token: string; title: string; subtitle: ReactNode; note?: ReactNode; onDone: () => void }) {
+function OnceBlock({ label, value, copyLabel, note }: { label: string; value: string; copyLabel: string; note?: ReactNode }) {
   const [copied, setCopied] = useState(false)
   return (
-    <>
-      <div>
-        <div className="flex items-center gap-2.5">
-          <KeyholeIcon state="closed" size={18} turn />
-          <div className="text-[15px] font-semibold">{title}</div>
-        </div>
-        <div className="mt-1 text-[13px] text-zinc-400">{subtitle}</div>
+    <div>
+      <div className="text-2xs font-semibold tracking-[0.08em] text-brass uppercase">{label} — shown once</div>
+      <div className="mt-3 font-mono text-base leading-normal tracking-[0.06em] break-all text-brass-pale select-all">{value}</div>
+      <Button
+        variant="brass"
+        autoFocus
+        data-autofocus
+        className="mt-4 w-full py-2.5 text-md"
+        onClick={() => {
+          copyText(value)
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1400)
+        }}
+      >
+        {copied ? (
+          <span className="inline-flex animate-copied items-center gap-2 [animation-duration:1.4s]">
+            <CheckGlyph color="#1a1405" /> Copied
+          </span>
+        ) : (
+          copyLabel
+        )}
+      </Button>
+      <div className="mt-3 text-center text-xs text-brass">Store this now — it won't be shown again.</div>
+      {note && <div className="mt-2 text-center text-xs2 text-zinc-400">{note}</div>}
+    </div>
+  )
+}
+
+function SecretHeader({ title, subtitle }: { title: string; subtitle?: ReactNode }) {
+  return (
+    <div>
+      <div className="flex items-center gap-2.5">
+        <KeyholeIcon state="closed" size={18} turn />
+        <div className="text-[15px] font-semibold">{title}</div>
       </div>
+      {subtitle && <div className="mt-1 text-[13px] text-zinc-400">{subtitle}</div>}
+    </div>
+  )
+}
+
+export function TokenPanel({ token, title, subtitle, note, onDone }: { token: string; title: string; subtitle: ReactNode; note?: ReactNode; onDone: () => void }) {
+  return (
+    <>
+      <SecretHeader title={title} subtitle={subtitle} />
       <div className="rounded-[10px] border border-brass/35 bg-brass/[0.06] p-5">
-        <div className="text-2xs font-semibold tracking-[0.08em] text-brass uppercase">Token — shown once</div>
-        <div className="mt-3 font-mono text-base leading-normal tracking-[0.06em] break-all text-brass-pale select-all">{token}</div>
-        <Button
-          variant="brass"
-          className="mt-4 w-full py-2.5 text-md"
-          onClick={() => {
-            copyText(token)
-            setCopied(true)
-            window.setTimeout(() => setCopied(false), 1400)
-          }}
-        >
-          {copied ? (
-            <span className="inline-flex animate-copied items-center gap-2 [animation-duration:1.4s]">
-              <CheckGlyph color="#1a1405" /> Copied
-            </span>
-          ) : (
-            'Copy token'
-          )}
-        </Button>
-        <div className="mt-3 text-center text-xs text-brass">Store this now — it won't be shown again.</div>
-        {note && <div className="mt-2 text-center text-xs2 text-zinc-400">{note}</div>}
+        <OnceBlock label="Token" value={token} copyLabel="Copy token" note={note} />
       </div>
       <Button className="w-full py-2.5" onClick={onDone}>
         I've stored it
       </Button>
     </>
+  )
+}
+
+export function ListenerPanel({ title, subtitle, url, user, password, note, onDone }: { title: string; subtitle?: ReactNode; url: string; user: string; password: string; note?: ReactNode; onDone: () => void }) {
+  return (
+    <>
+      <SecretHeader title={title} subtitle={subtitle ?? 'Give these to the outside system. Calls are appended to the message until it expires.'} />
+      <div className="flex flex-col gap-3 rounded-[10px] border border-brass/35 bg-brass/[0.06] p-5">
+        <Field label="URL">
+          <CopyChip variant="block" value={url} />
+        </Field>
+        <Field label="User">
+          <CopyChip variant="block" value={user} />
+        </Field>
+        <OnceBlock label="Password" value={password} copyLabel="Copy password" note={note} />
+      </div>
+      <Button className="w-full py-2.5" onClick={onDone}>
+        I've stored it
+      </Button>
+    </>
+  )
+}
+
+/**
+ * Shows queued one-time secrets above everything else. It can't be dismissed
+ * with Escape or a click outside, survives route changes, and asks the
+ * browser to confirm before the tab is closed or reloaded.
+ */
+export function SecretHost() {
+  const queue = useSyncExternalStore(subscribeSecrets, pendingSecrets)
+  const cur = queue[0]
+  useEffect(() => {
+    if (!cur) return
+    const h = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', h)
+    return () => window.removeEventListener('beforeunload', h)
+  }, [cur])
+  return (
+    <Modal open={!!cur} onClose={() => {}} width={560} dismissable={false} top label={cur?.title}>
+      {cur &&
+        (cur.kind === 'token' ? (
+          <TokenPanel key={cur.token} token={cur.token} title={cur.title} subtitle={cur.subtitle} note={cur.note} onDone={acknowledgeSecret} />
+        ) : (
+          <ListenerPanel key={cur.password} title={cur.title} subtitle={cur.subtitle} url={cur.url} user={cur.user} password={cur.password} note={cur.note} onDone={acknowledgeSecret} />
+        ))}
+    </Modal>
   )
 }
 

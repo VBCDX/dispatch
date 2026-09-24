@@ -59,12 +59,50 @@ export function targets(w: Workspace, msg: Pick<Message, 'audience' | 'author'>)
   return w.members.filter((m) => m.kind === 'agent' && !(msg.author.kind === 'agent' && msg.author.id === m.id) && inAudience(msg.audience, m.id)).map((m) => m.id)
 }
 
-/** Why a targeted agent won't receive a message, or null when it will. */
-export function filteredReason(d: DB, w: Workspace, msg: Pick<Message, 'author'>, recipient: Agent): string | null {
+/**
+ * Why a targeted agent can't receive a message right now, or null when it can.
+ * `final` refusals (a block, a removal, a revocation) filter what hasn't been
+ * delivered yet. Reversible ones (a suspension, membership read turned off,
+ * the agent's own read filter) only hold it until access returns.
+ * `cause` is the short name used in webhook and preview copy.
+ */
+export type Verdict = { reason: string; final: boolean; cause: string }
+export function accessVerdict(d: DB, w: Workspace, msg: Pick<Message, 'author'>, recipient: Agent): Verdict | null {
   const acc = evaluate(d, recipient.id, w.id, 'read')
-  if (!acc.allowed) return acc.reason
-  if (msg.author.kind === 'agent' && recipient.filters.agentBlocklist.includes(msg.author.id)) return `${recipient.label} blocks messages from this author.`
+  if (!acc.allowed) {
+    const i = acc.steps.findIndex((s) => !s.pass)
+    const member = w.members.some((m) => m.kind === 'agent' && m.id === recipient.id)
+    const [final, cause] =
+      i === 0
+        ? recipient.status === 'suspended'
+          ? [false, 'suspended']
+          : [true, recipient.status === 'revoked' ? 'revoked' : 'unknown agent']
+        : i === 1
+          ? [true, 'blocks this workspace']
+          : i === 2
+            ? [true, 'blocked']
+            : i === 3
+              ? [true, member ? 'token revoked' : 'removed']
+              : i === 4
+                ? [false, 'membership read off']
+                : [false, 'turned reading off']
+    return { reason: acc.reason!, final, cause }
+  }
+  if (msg.author.kind === 'agent' && recipient.filters.agentBlocklist.includes(msg.author.id)) return { reason: `${recipient.label} blocks messages from this author.`, final: true, cause: 'blocks this author' }
   return null
+}
+/** Why a targeted agent can't receive a message right now, or null when it can. */
+export const filteredReason = (d: DB, w: Workspace, msg: Pick<Message, 'author'>, recipient: Agent) => accessVerdict(d, w, msg, recipient)?.reason ?? null
+
+/**
+ * What an agent can see of a workspace's messages: what is addressed to it
+ * and not filtered for it, plus what it wrote itself. The inbox, search and
+ * GET /messages/{id} all apply this one rule. Humans see everything.
+ */
+export function visibleToAgent(m: Pick<Message, 'author' | 'receipts'>, agentId: string) {
+  if (m.author.kind === 'agent' && m.author.id === agentId) return true
+  const r = m.receipts[agentId]
+  return !!r && !r.filtered && !r.held
 }
 
 export function audienceLabel(d: DB, aud: Audience) {

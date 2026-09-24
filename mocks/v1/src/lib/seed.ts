@@ -8,7 +8,7 @@ const dana = (now: number) => ({
   name: 'Dana Keller',
   email: 'dana@acme.com',
   roles: { org_acme: 'Owner' as const },
-  status: 'active' as const,
+  orgStatus: { org_acme: 'active' as const },
   lastActive: now,
   sessions: [
     { device: 'MacBook Pro', place: 'San Francisco', at: now },
@@ -27,6 +27,7 @@ export function freshDB(): DB {
     humans: [dana(now)],
     agents: [],
     workspaces: [],
+    deletedWorkspaces: [],
     messages: [],
     notes: [],
     events: [{ id: 'ev_0', at: now - 2 * MIN, orgId: 'org_acme', type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Created organization Acme Corp', result: 'Done', trk: 'trk_0rg1n1t0' }],
@@ -42,6 +43,7 @@ const agent = (now: number, a: Partial<Agent> & Pick<Agent, 'id' | 'label' | 'ha
   status: 'active',
   createdAt: now - 20 * DAY,
   createdBy: 'Dana Keller',
+  createdById: 'u_dana',
   lastSeen: now - 30_000,
   connected: true,
   filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: [] },
@@ -53,6 +55,7 @@ const mem = (now: number, m: Partial<Membership> & Pick<Membership, 'kind' | 'id
   read: true,
   write: true,
   addedBy: 'Dana Keller',
+  addedById: 'u_dana',
   addedAt: now - 14 * DAY,
   ...m,
 })
@@ -95,10 +98,10 @@ export function populatedDB(): DB {
       tags: ['release-4.2', 'deploy'], audience: { mode: 'only', agentIds: ['agt_deployer'] },
       receipts: { agt_deployer: { deliveredAt: now - 44 * MIN, readAt: now - 40 * MIN, ackAt: now - 12 * MIN } },
       webhook: {
-        mode: 'fire', url: 'https://ci.acme.dev/hooks/smoke-suite', trigger: 'all-ack', authUser: 'dispatch', authSet: true, firedAt: now - 12 * MIN,
+        mode: 'fire', url: 'https://ci.acme.dev/hooks/smoke-suite', trigger: 'all-ack', authUser: 'dispatch', authSet: true, firedAt: now - 12 * MIN, outcome: 'delivered', outcomeAt: now - 11 * MIN,
         attempts: [
-          { id: 'wa_1', at: now - 12 * MIN, status: 503, ms: 2040, trk: 'trk_wh0005a1', note: 'CI returned 503 — retrying in 30 s' },
-          { id: 'wa_2', at: now - 11 * MIN, status: 200, ms: 188, trk: 'trk_wh0005a2' },
+          { id: 'wa_1', at: now - 12 * MIN, status: 503, ms: 2040, trk: 'trk_wh0005a1', note: 'CI returned 503 — attempt 2 of 4 in 30 s' },
+          { id: 'wa_2', at: now - 11 * MIN - 30_000, status: 200, ms: 188, trk: 'trk_wh0005a2', note: 'Retry 1 of 3' },
         ],
       },
     },
@@ -116,11 +119,11 @@ export function populatedDB(): DB {
       },
     },
     {
-      id: 'msg_07', wsId: 'wks_rel', author: { kind: 'agent', id: 'agt_builder' }, parentId: 'msg_06', viaWebhook: true, createdAt: now - 9 * MIN, expiresAt: null, trk: 'trk_ls0006c2',
+      id: 'msg_07', wsId: 'wks_rel', author: { kind: 'webhook', id: 'lsn_8Kq2vT', from: '198.51.100.7' }, parentId: 'msg_06', createdAt: now - 9 * MIN, expiresAt: null, trk: 'trk_ls0006c2',
       body: 'Listener call from 198.51.100.7: build 4.2.0-rc1 signed · notarized.',
       payload: '{\n  "artifact": "Acme-4.2.0-rc1.dmg",\n  "signed": true,\n  "notarized": true\n}',
       tags: ['release-4.2', 'artifacts'], audience: { mode: 'all' },
-      receipts: { agt_planner: { deliveredAt: now - 9 * MIN }, agt_reviewer: {}, agt_deployer: { deliveredAt: now - 8 * MIN } },
+      receipts: { agt_planner: { deliveredAt: now - 9 * MIN }, agt_builder: { deliveredAt: now - 9 * MIN, readAt: now - 8 * MIN }, agt_reviewer: {}, agt_deployer: { deliveredAt: now - 8 * MIN }, agt_scraper: { filtered: 'Release train blocks this agent — overrides membership.' } },
     },
     {
       id: 'msg_08', wsId: 'wks_rel', author: H('u_mia'), createdAt: now - 6 * MIN, expiresAt: null, trk: 'trk_m1a00008',
@@ -138,7 +141,7 @@ export function populatedDB(): DB {
       id: 'msg_10', wsId: 'wks_inc', author: A('agt_deployer'), createdAt: now - 70 * MIN, expiresAt: now + 2 * DAY, trk: 'trk_d3p10010',
       body: 'p95 latency on api-gateway up 38% since 13:05. Correlates with the connection-pool change in 4.1.3. Proposing rollback of that flag only.',
       tags: ['incident', 'sev3', 'api-gateway'], audience: { mode: 'all' },
-      receipts: { agt_reviewer: done(65 * MIN), agt_triage: {} },
+      receipts: { agt_reviewer: done(65 * MIN), agt_triage: { held: 'triage-bot is suspended.', heldCause: 'suspended', heldAt: now - 70 * MIN } },
     },
     {
       id: 'msg_11', wsId: 'wks_inc', author: H('u_sam'), parentId: 'msg_10', createdAt: now - 60 * MIN, expiresAt: null, trk: 'trk_s4m00011',
@@ -154,21 +157,28 @@ export function populatedDB(): DB {
     },
   ]
 
+  messages.push({
+    id: 'msg_n1', wsId: 'wks_docs', author: H('u_mia'), createdAt: now - 2 * HOUR, expiresAt: now + 70 * HOUR, trk: 'trk_nw0000n1',
+    body: 'docs-bot: the 2.3 changelog page needs the new rate-limit section before Friday.',
+    tags: ['docs', 'changelog'], audience: { mode: 'all' },
+    receipts: { agt_docs: done(2 * HOUR - MIN, false) },
+  })
   const ev = (id: string, ago: number, e: Omit<AuditEvent, 'id' | 'at' | 'orgId'>): AuditEvent => ({ id, at: now - ago, orgId: 'org_acme', ...e })
   const events: AuditEvent[] = [
     ev('ev_1', 6 * MIN, { wsId: 'wks_rel', type: 'message', severity: 'ok', actor: 'Mia Chen', actorKind: 'human', actorId: 'u_mia', object: 'Posted to Release train · #qa', result: 'Queued for 4 agents', trk: 'trk_m1a00008' }),
     ev('ev_2', 8 * MIN + 30_000, { wsId: 'wks_rel', type: 'blocked', severity: 'blocked', actor: 'web-scraper', actorKind: 'agent', actorId: 'agt_scraper', object: 'GET /v1/workspaces/wks_rel/messages', result: 'Blocked', trk: 'trk_bl0ck0a1', reason: 'Blocked: Release train blocks web-scraper — the workspace blocklist overrides its membership.', detail: [['Agent ID', 'agt_scraper'], ['Workspace ID', 'wks_rel'], ['Rule', 'Workspace agent blocklist'], ['Token', 'dsp_ws_••••Lm3c (valid)']], link: { label: 'Open Release train › Access', to: '/workspaces/wks_rel/access' } }),
-    ev('ev_3', 9 * MIN, { wsId: 'wks_rel', type: 'webhook', severity: 'ok', actor: 'buildfarm', actorKind: 'webhook', object: 'Listener lsn_8Kq2vT · message msg_06', result: '202 · appended to thread', trk: 'trk_ls0006c2', detail: [['From', '198.51.100.7'], ['Auth', 'Basic · buildfarm'], ['Bytes', '1,840']] }),
+    ev('ev_3', 9 * MIN, { wsId: 'wks_rel', type: 'webhook', severity: 'ok', actor: 'buildfarm', actorKind: 'webhook', actorId: 'lsn_8Kq2vT', object: 'Listener lsn_8Kq2vT · message msg_06', result: '202 · appended to thread', trk: 'trk_ls0006c2', detail: [['From', '198.51.100.7'], ['Auth', 'Basic · buildfarm'], ['Bytes', '1,840']] }),
     ev('ev_4', 11 * MIN, { wsId: 'wks_rel', type: 'webhook', severity: 'ok', actor: 'Dispatch', actorKind: 'system', object: 'Fired ci.acme.dev/hooks/smoke-suite · msg_05', result: '200 · 188 ms (retry 1)', trk: 'trk_wh0005a2' }),
     ev('ev_5', 12 * MIN, { wsId: 'wks_rel', type: 'webhook', severity: 'warn', actor: 'Dispatch', actorKind: 'system', object: 'Fired ci.acme.dev/hooks/smoke-suite · msg_05', result: '503 · retrying', trk: 'trk_wh0005a1', reason: 'CI answered 503. Dispatch retries 3 times with backoff (30 s, 2 min, 10 min).' }),
     ev('ev_6', 12 * MIN, { wsId: 'wks_rel', type: 'receipt', severity: 'ok', actor: 'deployer', actorKind: 'agent', actorId: 'agt_deployer', object: 'Acknowledged msg_05', result: 'All targets acked', trk: 'trk_rc0005ak' }),
-    ev('ev_7', 18 * MIN, { wsId: 'wks_rel', type: 'webhook', severity: 'blocked', actor: '203.0.113.40', actorKind: 'webhook', object: 'Listener lsn_8Kq2vT · message msg_06', result: '401 · wrong password', trk: 'trk_ls0006c1', reason: 'Rejected: basic-auth password didn’t match. Nothing was appended.' }),
+    ev('ev_7', 18 * MIN, { wsId: 'wks_rel', type: 'webhook', severity: 'blocked', actor: '203.0.113.40', actorKind: 'webhook', actorId: 'lsn_8Kq2vT', object: 'Listener lsn_8Kq2vT · message msg_06', result: '401 · wrong password', trk: 'trk_ls0006c1', reason: 'Rejected: basic-auth password didn’t match. Nothing was appended.' }),
     ev('ev_8', 35 * MIN, { wsId: 'wks_rel', type: 'admin', severity: 'info', actor: 'planner', actorKind: 'agent', actorId: 'agt_planner', object: 'Added deployer to Release train (read + write) — as delegated admin', result: 'Done', trk: 'trk_ad0m0008' }),
     ev('ev_9', 2 * HOUR, { wsId: 'wks_rel', type: 'context', severity: 'info', actor: 'planner', actorKind: 'agent', actorId: 'agt_planner', object: 'Updated context “Release 4.2 checklist” → v3', result: 'Done', trk: 'trk_cx0009v3' }),
     ev('ev_10', 3 * HOUR, { wsId: 'wks_sbx', type: 'blocked', severity: 'blocked', actor: 'deployer', actorKind: 'agent', actorId: 'agt_deployer', object: 'GET /v1/workspaces/wks_sbx/messages', result: 'Blocked', trk: 'trk_bl0ck0b2', reason: 'Blocked: deployer blocks Sandbox on its own side (agent workspace blocklist).', link: { label: 'Open deployer’s filters', to: '/agents/agt_deployer' } }),
     ev('ev_11', 1 * DAY, { wsId: 'wks_rel', type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Delegated admin on Release train to planner (agent)', result: 'Done', trk: 'trk_dl9a0011' }),
     ev('ev_12', 1 * DAY, { wsId: 'wks_rel', type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Delegated admin on Release train to Ravi Mehta', result: 'Done', trk: 'trk_dl9a0012' }),
     ev('ev_13', 2 * DAY, { wsId: 'wks_rel', type: 'admin', severity: 'info', actor: 'Ravi Mehta', actorKind: 'human', actorId: 'u_ravi', object: 'Added web-scraper to Release train blocklist', result: 'Done', trk: 'trk_bl0c0013' }),
+    { id: 'ev_n1', at: now - 2 * HOUR, orgId: 'org_nw', wsId: 'wks_docs', type: 'message', severity: 'ok', actor: 'Mia Chen', actorKind: 'human', actorId: 'u_mia', object: 'Posted to Docs site · #docs #changelog', result: 'For 1 agent', trk: 'trk_nw0000n1' },
   ]
 
   return {
@@ -176,33 +186,51 @@ export function populatedDB(): DB {
     currentUserId: 'u_dana',
     currentOrgId: 'org_acme',
     checklistDismissed: true,
-    orgs: [{ id: 'org_acme', name: 'Acme Corp', createdAt: now - 60 * DAY }],
+    // A second, small organization so per-org suspension is visible: Mia is a user in both.
+    orgs: [
+      { id: 'org_acme', name: 'Acme Corp', createdAt: now - 60 * DAY },
+      { id: 'org_nw', name: 'Northwind Labs', createdAt: now - 20 * DAY },
+    ],
     humans: [
       dana(now),
-      { id: 'u_ravi', name: 'Ravi Mehta', email: 'ravi@acme.com', roles: { org_acme: 'orgAdmin' }, status: 'active', lastActive: now - 2 * HOUR, sessions: [{ device: 'ThinkPad', place: 'Austin', at: now - 2 * HOUR }] },
-      { id: 'u_mia', name: 'Mia Chen', email: 'mia@acme.com', roles: { org_acme: 'member' }, status: 'active', lastActive: now - 6 * MIN, sessions: [{ device: 'MacBook Air', place: 'Seattle', at: now - 6 * MIN }] },
-      { id: 'u_sam', name: 'Sam Ortiz', email: 'sam@acme.com', roles: { org_acme: 'member' }, status: 'active', lastActive: now - HOUR, sessions: [] },
+      { id: 'u_ravi', name: 'Ravi Mehta', email: 'ravi@acme.com', roles: { org_acme: 'userAdmin' }, orgStatus: { org_acme: 'active' }, lastActive: now - 2 * HOUR, sessions: [{ device: 'ThinkPad', place: 'Austin', at: now - 2 * HOUR }] },
+      // Mia belongs to two organizations; her status is per organization.
+      { id: 'u_mia', name: 'Mia Chen', email: 'mia@acme.com', roles: { org_acme: 'user', org_nw: 'user' }, orgStatus: { org_acme: 'active', org_nw: 'active' }, lastActive: now - 6 * MIN, sessions: [{ device: 'MacBook Air', place: 'Seattle', at: now - 6 * MIN }] },
+      { id: 'u_sam', name: 'Sam Ortiz', email: 'sam@acme.com', roles: { org_acme: 'user' }, orgStatus: { org_acme: 'active' }, lastActive: now - HOUR, sessions: [] },
+      { id: 'u_leo', name: 'Leo Park', email: 'leo@northwind.dev', roles: { org_nw: 'Owner' }, orgStatus: { org_nw: 'active' }, lastActive: now - 3 * HOUR, sessions: [{ device: 'Linux desktop', place: 'Portland', at: now - 3 * HOUR }] },
     ],
     agents: [
       agent(now, { id: 'agt_planner', label: 'planner', harness: 'Claude Code', tokenLast4: 'Pn7w', description: 'Breaks releases into tasks and keeps the checklist current.' }),
       agent(now, { id: 'agt_builder', label: 'builder', harness: 'Codex', tokenLast4: 'Bd2k', description: 'Cuts branches, runs CI, reports test results.' }),
       agent(now, { id: 'agt_reviewer', label: 'reviewer', harness: 'OpenCode', tokenLast4: 'Rv8q', description: 'Security and code review.', filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: ['agt_scraper'] } }),
       agent(now, { id: 'agt_deployer', label: 'deployer', harness: 'Claude Code', tokenLast4: 'Dp4m', description: 'Ships to staging and prod; watches rollouts.', filters: { read: true, write: true, workspaceBlocklist: ['wks_sbx'], agentBlocklist: [] } }),
-      agent(now, { id: 'agt_scraper', label: 'web-scraper', harness: 'Other', tokenLast4: 'Ws1x', description: 'Collects release notes from vendor sites. Read-only by its own choice.', createdBy: 'Ravi Mehta', filters: { read: true, write: false, workspaceBlocklist: [], agentBlocklist: [] } }),
+      agent(now, { id: 'agt_scraper', label: 'web-scraper', harness: 'Other', tokenLast4: 'Ws1x', description: 'Collects release notes from vendor sites. Read-only by its own choice.', createdBy: 'Ravi Mehta', createdById: 'u_ravi', filters: { read: true, write: false, workspaceBlocklist: [], agentBlocklist: [] } }),
+      agent(now, { id: 'agt_docs', orgId: 'org_nw', label: 'docs-bot', harness: 'OpenCode', tokenLast4: 'Dx3v', createdBy: 'Leo Park', createdById: 'u_leo', description: 'Keeps the Northwind docs site in sync with releases.' }),
       agent(now, { id: 'agt_triage', label: 'triage-bot', harness: 'Codex', tokenLast4: 'Tr5z', status: 'suspended', lastSeen: now - 3 * DAY, connected: false, description: 'Labels incoming incidents. Suspended while its prompt is rewritten.' }),
     ],
     workspaces: [
       {
+        id: 'wks_docs', orgId: 'org_nw', name: 'Docs site', description: 'Northwind’s public docs: drafts, reviews and publishing.', createdAt: now - 20 * DAY,
+        members: [
+          mem(now, { kind: 'human', id: 'u_leo', role: 'admin', addedBy: 'Leo Park', addedById: 'u_leo' }),
+          mem(now, { kind: 'human', id: 'u_mia', addedBy: 'Leo Park', addedById: 'u_leo' }),
+          mem(now, { kind: 'agent', id: 'agt_docs', tokenLast4: 'Dw1q', addedBy: 'Leo Park', addedById: 'u_leo' }),
+        ],
+        agentBlocklist: [],
+        defaultExpiryHours: 72,
+        retentionDays: 90,
+      },
+      {
         id: 'wks_rel', orgId: 'org_acme', name: 'Release train', description: 'Everything that gets a release out the door: plan, build, review, deploy.', createdAt: now - 30 * DAY,
         members: [
           mem(now, { kind: 'human', id: 'u_dana', role: 'admin', addedAt: now - 30 * DAY }),
-          mem(now, { kind: 'human', id: 'u_ravi', role: 'admin', delegatedBy: 'Dana Keller' }),
+          mem(now, { kind: 'human', id: 'u_ravi', role: 'admin', delegatedBy: 'Dana Keller', delegatedById: 'u_dana' }),
           mem(now, { kind: 'human', id: 'u_mia' }),
-          mem(now, { kind: 'agent', id: 'agt_planner', role: 'admin', delegatedBy: 'Dana Keller', tokenLast4: 'Pl9a' }),
+          mem(now, { kind: 'agent', id: 'agt_planner', role: 'admin', delegatedBy: 'Dana Keller', delegatedById: 'u_dana', tokenLast4: 'Pl9a' }),
           mem(now, { kind: 'agent', id: 'agt_builder', tokenLast4: 'Bu3f' }),
           mem(now, { kind: 'agent', id: 'agt_reviewer', tokenLast4: 'Re6t' }),
-          mem(now, { kind: 'agent', id: 'agt_deployer', tokenLast4: 'De2h', addedBy: 'planner', addedAt: now - 35 * MIN }),
-          mem(now, { kind: 'agent', id: 'agt_scraper', write: false, tokenLast4: 'Lm3c', addedBy: 'Ravi Mehta' }),
+          mem(now, { kind: 'agent', id: 'agt_deployer', tokenLast4: 'De2h', addedBy: 'planner', addedById: 'agt_planner', addedAt: now - 35 * MIN }),
+          mem(now, { kind: 'agent', id: 'agt_scraper', write: false, tokenLast4: 'Lm3c', addedBy: 'Ravi Mehta', addedById: 'u_ravi' }),
         ],
         agentBlocklist: ['agt_scraper'],
         defaultExpiryHours: 24,
@@ -212,7 +240,7 @@ export function populatedDB(): DB {
         id: 'wks_inc', orgId: 'org_acme', name: 'Incidents', description: 'Live incidents. Humans approve every production change here.', createdAt: now - 25 * DAY,
         members: [
           mem(now, { kind: 'human', id: 'u_dana', role: 'admin' }),
-          mem(now, { kind: 'human', id: 'u_sam', role: 'admin', delegatedBy: 'Dana Keller' }),
+          mem(now, { kind: 'human', id: 'u_sam', role: 'admin', delegatedBy: 'Dana Keller', delegatedById: 'u_dana' }),
           mem(now, { kind: 'agent', id: 'agt_deployer', tokenLast4: 'Di7k' }),
           mem(now, { kind: 'agent', id: 'agt_reviewer', write: false, tokenLast4: 'Ri4p' }),
           mem(now, { kind: 'agent', id: 'agt_triage', tokenLast4: 'Ti0n' }),
@@ -224,15 +252,16 @@ export function populatedDB(): DB {
       {
         id: 'wks_sbx', orgId: 'org_acme', name: 'Sandbox', description: 'Experiments. Nothing here is load-bearing.', createdAt: now - 10 * DAY,
         members: [
-          mem(now, { kind: 'human', id: 'u_ravi', role: 'admin', addedBy: 'Ravi Mehta' }),
-          mem(now, { kind: 'agent', id: 'agt_builder', tokenLast4: 'Bs5c', addedBy: 'Ravi Mehta' }),
-          mem(now, { kind: 'agent', id: 'agt_deployer', tokenLast4: 'Ds8u', addedBy: 'Ravi Mehta' }),
+          mem(now, { kind: 'human', id: 'u_ravi', role: 'admin', addedBy: 'Ravi Mehta', addedById: 'u_ravi' }),
+          mem(now, { kind: 'agent', id: 'agt_builder', tokenLast4: 'Bs5c', addedBy: 'Ravi Mehta', addedById: 'u_ravi' }),
+          mem(now, { kind: 'agent', id: 'agt_deployer', tokenLast4: 'Ds8u', addedBy: 'Ravi Mehta', addedById: 'u_ravi' }),
         ],
         agentBlocklist: [],
         defaultExpiryHours: null,
         retentionDays: 30,
       },
     ],
+    deletedWorkspaces: [],
     messages,
     notes: [
       { id: 'nt_1', wsId: 'wks_rel', title: 'Release 4.2 checklist', tags: ['release-4.2', 'plan'], version: 3, updatedBy: 'planner', updatedAt: now - 2 * HOUR, history: [{ version: 1, by: 'planner', at: now - 2 * DAY }, { version: 2, by: 'Dana Keller', at: now - 1 * DAY }, { version: 3, by: 'planner', at: now - 2 * HOUR }], body: '1. Cut release/4.2 (builder)\n2. Full suite green, or failures triaged (builder)\n3. Security pass on SSO changes (reviewer)\n4. Staging rollout + smoke suite (deployer)\n5. QA sign-off (Mia)\n6. Prod rollout behind the release flag (deployer, human approval)' },

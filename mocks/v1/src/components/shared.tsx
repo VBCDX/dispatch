@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { clock, initials } from '../lib/format'
-import { useDB, wsById } from '../lib/store'
-import type { AuditEvent, Harness, Principal } from '../lib/types'
+import { accessImpact, ALREADY_DELIVERED, actorKey, actorLabel, humanById, me, useDB, wsLabel } from '../lib/store'
+import type { DB } from '../lib/types'
+import type { AuditEvent, Author, Harness } from '../lib/types'
 import { CopyChip } from './credential'
 import { Avatar, Button, ErrorBox, Field, Footer, Input, Modal, SkeletonRows, cx, useFakeLoad } from './ui'
 
@@ -30,9 +31,38 @@ export function ListBody({ cols, what, children, empty, rows = 3 }: { cols: stri
 }
 
 /* ------------------------------------------------------------------ */
+/* Records loaded by ID belong to an organization.                     */
+/* ------------------------------------------------------------------ */
+/**
+ * Resolves a record's own organization. A viewer who belongs to it is moved
+ * into it, so that org's suspended gate and roles apply; anyone else gets a
+ * no-access state. Returns 'ok' once the record's org is the current one.
+ */
+export function useRecordOrg(orgId: string | undefined): 'ok' | 'switching' | 'denied' {
+  const d = useDB()
+  // The switch itself happens in AppShell, once per arrival at the URL (before any org gate applies).
+  const member = !!orgId && !!me(d)?.roles[orgId]
+  const elsewhere = !!orgId && orgId !== d.currentOrgId
+  if (!elsewhere) return 'ok'
+  return member ? 'switching' : 'denied'
+}
+
+export function NoAccess({ what, back }: { what: string; back: { to: string; label: string } }) {
+  return (
+    <div role="alert" className="max-w-[560px] rounded-[10px] border border-edge bg-panel p-6 text-sm2 text-zinc-400">
+      <div className="text-[13px] font-semibold text-zinc-200">You don’t have access to this {what}.</div>
+      <div className="mt-1">It belongs to an organization or workspace you’re not part of. Nothing about it is shown.</div>
+      <Link to={back.to} className="mt-3 inline-block">
+        {back.label} →
+      </Link>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /* Impact preview                                                      */
 /* ------------------------------------------------------------------ */
-export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, onConfirm, typeToConfirm }: { open: boolean; onClose: () => void; title: ReactNode; rows: [string, ReactNode, ('amber' | 'red')?][]; body?: ReactNode; confirmLabel: string; onConfirm: () => void; typeToConfirm?: string }) {
+export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, onConfirm, typeToConfirm, confirmVariant = 'danger' }: { open: boolean; onClose: () => void; title: ReactNode; rows: [string, ReactNode, ('amber' | 'red')?][]; body?: ReactNode; confirmLabel: string; onConfirm: () => void; typeToConfirm?: string; confirmVariant?: 'danger' | 'primary' }) {
   const [typed, setTyped] = useState('')
   useEffect(() => {
     if (open) setTyped('')
@@ -59,7 +89,7 @@ export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, o
         </Button>
         <Button
           size="lg"
-          variant="danger"
+          variant={confirmVariant}
           disabled={!!typeToConfirm && typed !== typeToConfirm}
           onClick={() => {
             onConfirm()
@@ -71,6 +101,25 @@ export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, o
       </Footer>
     </Modal>
   )
+}
+
+/**
+ * Impact-preview rows for taking an agent's access away. `final` for a block,
+ * removal or revocation (queued messages are filtered, waiting webhooks won't
+ * fire); otherwise a reversible hold (suspension, read turned off).
+ */
+export function accessImpactRows(d: DB, agentId: string, wsId: string | undefined, final: boolean): [string, ReactNode, ('amber' | 'red')?][] {
+  const i = accessImpact(d, agentId, wsId)
+  const kept = i.delivered + i.read + i.acked
+  return [
+    ['Queued for it, never delivered', i.queued ? `${i.queued} — ${final ? 'filtered now, never delivered' : 'held; delivered if access returns'}` : 'None', i.queued ? 'amber' : undefined],
+    ['Already delivered', kept ? `${kept} ${ALREADY_DELIVERED} (${i.delivered} delivered · ${i.read} read · ${i.acked} acknowledged)` : 'None'],
+    [
+      'Fire webhooks waiting on it',
+      i.hooks.length ? `${final ? 'Won’t fire' : 'Stay pending while it’s held'}: ${i.hooks.map((h) => `${h.id} (${h.url})`).join(', ')}` : 'None',
+      i.hooks.length ? (final ? 'red' : 'amber') : undefined,
+    ],
+  ]
 }
 
 /* ------------------------------------------------------------------ */
@@ -85,8 +134,19 @@ export function AgentGlyph({ harness, size = 22, dim }: { harness: Harness; size
   )
 }
 
-export function PrincipalChip({ p, size = 22, withKind, className }: { p: Principal; size?: number; withKind?: boolean; className?: string }) {
+export function PrincipalChip({ p, size = 22, withKind, className }: { p: Author; size?: number; withKind?: boolean; className?: string }) {
   const d = useDB()
+  if (p.kind === 'webhook')
+    return (
+      <span className={cx('inline-flex min-w-0 items-center gap-2', className)} title={`Outside system calling listener ${p.id} from ${p.from}`}>
+        <span style={{ width: size, height: size, minWidth: size, fontSize: size > 26 ? 12 : 10 }} className="inline-flex items-center justify-center rounded-md border border-sky-500/30 bg-sky-500/10 font-mono text-sky-400">
+          ⇠
+        </span>
+        <span className="truncate font-mono text-[12.5px] text-sky-300">{p.id}</span>
+        <span className="font-mono text-2xs text-zinc-500">{p.from}</span>
+        {withKind && <span className="text-2xs text-zinc-600">webhook listener</span>}
+      </span>
+    )
   if (p.kind === 'agent') {
     const a = d.agents.find((x) => x.id === p.id)
     return (
@@ -144,11 +204,14 @@ export function LogRow({ e, compact, expanded, onToggle, fresh }: { e: AuditEven
         <span className={cx('size-[7px] min-w-[7px] rounded-full', DOT[e.severity])} />
         {!compact && <span className={cx('rounded-full border px-2 py-0.5 text-2xs font-semibold', TYPE_TONE[e.type])}>{e.type}</span>}
         <span className="flex min-w-0 items-center gap-2">
-          <span className={cx('shrink-0', e.actorKind === 'agent' ? 'font-mono text-[12.5px] text-zinc-300' : 'text-zinc-300')}>{e.actor}</span>
-          {e.actorKind === 'agent' && !compact && <span className="text-2xs text-zinc-600">agent</span>}
+          <span className={cx('shrink-0', e.actorKind === 'agent' ? 'font-mono text-[12.5px] text-zinc-300' : 'text-zinc-300')} title={e.actorId ? `${e.actorKind} · ${e.actorId}` : e.actorKind}>
+            {actorLabel(d, e)}
+          </span>
+          {(e.actorKind === 'agent' || e.actorKind === 'webhook') && !compact && <span className="text-2xs text-zinc-600">{e.actorKind}</span>}
+          {e.viaHumanId && <span className="shrink-0 rounded border border-brass/30 px-1.5 text-2xs text-brass-light" title="A human sent this from the API console with the agent’s credentials">via {humanById(d, e.viaHumanId)?.name ?? e.viaHumanId} · console</span>}
           <span className="text-zinc-600">→</span>
           <span className="truncate text-zinc-400">{e.object}</span>
-          {!compact && e.wsId && <span className="shrink-0 text-xs text-zinc-600">· {wsById(d, e.wsId)?.name}</span>}
+          {!compact && e.wsId && <span className="shrink-0 text-xs text-zinc-600">· {wsLabel(d, e.wsId)}</span>}
         </span>
         <span className={cx('ml-auto shrink-0 whitespace-nowrap', resultTone(e))}>{e.result}</span>
         <CopyChip value={e.trk} variant="inline" />
@@ -211,14 +274,16 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [seen] = useState(() => new Set(events.map((e) => e.id)))
   const { state, retry } = useListState()
-  const actors = Array.from(new Set(events.map((e) => e.actor))).sort()
+  // Listener rows are keyed by listener ID (callers' IPs vary), so one listener is one actor.
+  const actors = Array.from(new Map(events.map((e) => [actorKey(e), e.actorKind === 'webhook' && e.actorId ? `listener ${e.actorId} · webhook` : `${actorLabel(d, e)}${e.actorKind === 'human' || e.actorKind === 'system' ? '' : ` · ${e.actorKind}`}`])).entries()).sort((a, b) => a[1].localeCompare(b[1]))
+  const wsOptions = Array.from(new Set(events.map((e) => e.wsId).filter((x): x is string => !!x))).map((id) => [id, wsLabel(d, id)!] as const).sort((a, b) => a[1].localeCompare(b[1]))
   const filtered = events.filter((e) => {
     if (q) {
       const s = q.toLowerCase()
-      if (![e.trk, e.actor, e.object, e.type, e.result, e.actorId ?? '', e.wsId ?? ''].some((x) => x.toLowerCase().includes(s))) return false
+      if (![e.trk, e.actor, actorLabel(d, e), e.viaHumanId ? `via ${humanById(d, e.viaHumanId)?.name}` : '', e.object, e.type, e.result, e.reason ?? '', e.actorId ?? '', e.wsId ?? ''].some((x) => x.toLowerCase().includes(s))) return false
     }
     if (type && e.type !== type) return false
-    if (actor && e.actor !== actor) return false
+    if (actor && actorKey(e) !== actor) return false
     if (ws && e.wsId !== ws) return false
     if (result === 'ok' && e.severity !== 'ok') return false
     if (result === 'blocked' && e.severity !== 'blocked') return false
@@ -226,8 +291,11 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
     return true
   })
   const exportCsv = () => {
-    const body = filtered.map((e) => [new Date(e.at).toISOString(), e.type, e.actor, e.object, e.result, e.trk].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
-    const url = URL.createObjectURL(new Blob(['time,type,actor,object,result,tracking_code\n' + body], { type: 'text/csv' }))
+    const cols = ['time', 'workspace_id', 'workspace', 'type', 'severity', 'actor_kind', 'actor_id', 'actor', 'via_human_id', 'object', 'result', 'reason', 'tracking_code', 'detail']
+    const body = filtered
+      .map((e) => [new Date(e.at).toISOString(), e.wsId ?? '', wsLabel(d, e.wsId) ?? '', e.type, e.severity, e.actorKind, e.actorId ?? '', actorLabel(d, e), e.viaHumanId ?? '', e.object, e.result, e.reason ?? '', e.trk, e.detail ? JSON.stringify(Object.fromEntries(e.detail)) : ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+      .join('\n')
+    const url = URL.createObjectURL(new Blob([cols.join(',') + '\n' + body], { type: 'text/csv' }))
     const a = document.createElement('a')
     a.href = url
     a.download = 'dispatch-audit.csv'
@@ -244,19 +312,19 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
           ))}
         </Filter>
         <Filter value={actor} onChange={setActor} label="Actor">
-          {actors.map((a) => (
-            <option key={a}>{a}</option>
+          {actors.map(([k, l]) => (
+            <option key={k} value={k}>
+              {l}
+            </option>
           ))}
         </Filter>
         {!hideWorkspaceFilter && (
           <Filter value={ws} onChange={setWs} label="Workspace">
-            {d.workspaces
-              .filter((w) => w.orgId === d.currentOrgId)
-              .map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
+            {wsOptions.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
           </Filter>
         )}
         <Filter value={result} onChange={setResult} label="Result">

@@ -3,6 +3,7 @@ import { HashRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { liveTick, useDB } from './lib/store'
 import { AppShell } from './components/AppShell'
 import { DemoPanel } from './components/DemoPanel'
+import { SecretHost } from './components/credential'
 import { Developers } from './pages/Developers'
 import { AccountSettings, AuditPage, Home, MySettings, SearchPage } from './pages/misc'
 import { AgentDetail, AgentsPage, PeoplePage } from './pages/players'
@@ -50,6 +51,7 @@ export default function App() {
         </Route>
       </Routes>
       <DemoPanel />
+      <SecretHost />
     </HashRouter>
   )
 }

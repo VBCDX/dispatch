@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, NavLink } from 'react-router-dom'
 
@@ -36,9 +36,14 @@ export function Button({
 /* Form fields                                                        */
 /* ------------------------------------------------------------------ */
 export function Field({ label, optional, hint, children, htmlFor, error }: { label: ReactNode; optional?: boolean | string; hint?: ReactNode; children: ReactNode; htmlFor?: string; error?: string | null }) {
+  // Associate the label with a single form control child, so it has an accessible name.
+  const auto = useId()
+  const el = isValidElement<{ id?: string }>(children) && typeof children.type !== 'string' && !htmlFor ? children : null
+  const id = htmlFor ?? (el ? (el.props.id ?? auto) : undefined)
+  if (el && !el.props.id) children = cloneElement(el, { id })
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={htmlFor} className="text-xs font-medium text-zinc-300">
+      <label htmlFor={id} className="text-xs font-medium text-zinc-300">
         {label}
         {optional && <span className="font-normal text-zinc-600"> · {typeof optional === 'string' ? optional : 'optional'}</span>}
       </label>
@@ -67,18 +72,32 @@ export function Select({ className, children, mono, ...rest }: React.SelectHTMLA
   )
 }
 
-export function Segmented<T extends string>({ value, options, onChange, size = 'md', className }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void; size?: 'sm' | 'md'; className?: string }) {
+/** A single-choice form control. Exposed as a radio group: arrow keys move the choice, Tab leaves the group. */
+export function Segmented<T extends string>({ value, options, onChange, size = 'md', className, label }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void; size?: 'sm' | 'md'; className?: string; label?: string }) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([])
+  const current = options.findIndex((o) => o.value === value)
+  const onKeyDown = (e: React.KeyboardEvent, i: number) => {
+    const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
+    const to = e.key === 'Home' ? 0 : e.key === 'End' ? options.length - 1 : step ? (i + step + options.length) % options.length : -1
+    if (to < 0) return
+    e.preventDefault()
+    onChange(options[to].value)
+    refs.current[to]?.focus()
+  }
   return (
-    <div role="tablist" className={cx('flex gap-0.5 self-start border border-edge bg-page', size === 'sm' ? 'rounded-[7px] p-0.5' : 'rounded-lg p-[3px]', className)}>
-      {options.map((o) => {
+    <div role="radiogroup" aria-label={label} className={cx('flex gap-0.5 self-start border border-edge bg-page', size === 'sm' ? 'rounded-[7px] p-0.5' : 'rounded-lg p-[3px]', className)}>
+      {options.map((o, i) => {
         const on = o.value === value
         return (
           <button
             key={o.value}
-            role="tab"
-            aria-selected={on}
+            ref={(el) => void (refs.current[i] = el)}
+            role="radio"
+            aria-checked={on}
+            tabIndex={on || (current < 0 && i === 0) ? 0 : -1}
             type="button"
             onClick={() => onChange(o.value)}
+            onKeyDown={(e) => onKeyDown(e, i)}
             className={cx(
               size === 'sm' ? 'rounded-[5px] px-2.5 py-1 text-xs2' : 'rounded-md px-3.5 py-1.5 text-sm2',
               on ? 'bg-edge font-semibold text-zinc-100' : 'text-zinc-400 hover:text-zinc-200',
@@ -367,12 +386,62 @@ export function ErrorBox({ what, onRetry }: { what: string; onRetry: () => void 
 /* ------------------------------------------------------------------ */
 /* Overlays                                                            */
 /* ------------------------------------------------------------------ */
-function useEscape(onClose: () => void) {
+/*
+ * Layers: modals, drawers and open menus stack. Only the topmost layer
+ * reacts to Escape, so closing a menu never closes the drawer under it, and
+ * a one-time secret on top of a drawer can't be dismissed by the drawer.
+ * Dialog layers also trap Tab, take focus when they open, and hand it back.
+ */
+const layerStack: number[] = []
+let layerSeq = 0
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+export const focusables = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((x) => !x.closest('[inert]'))
+
+export function useLayer(open: boolean, onEscape: (() => void) | null, trap?: React.RefObject<HTMLElement | null>) {
+  const esc = useRef(onEscape)
   useEffect(() => {
-    const h = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
-  }, [onClose])
+    esc.current = onEscape
+  })
+  useEffect(() => {
+    if (!open) return
+    const id = ++layerSeq
+    layerStack.push(id)
+    const top = () => layerStack[layerStack.length - 1] === id
+    const prev = document.activeElement as HTMLElement | null
+    const el = trap?.current
+    if (el && !el.contains(document.activeElement)) (el.querySelector<HTMLElement>('[data-autofocus]') ?? focusables(el)[0] ?? el).focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (!top()) return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        esc.current?.()
+      }
+      if (e.key === 'Tab' && el) {
+        const f = focusables(el)
+        if (!f.length) return e.preventDefault()
+        const i = f.indexOf(document.activeElement as HTMLElement)
+        if (e.shiftKey && i <= 0) {
+          e.preventDefault()
+          f[f.length - 1].focus()
+        } else if (!e.shiftKey && (i === -1 || i === f.length - 1)) {
+          e.preventDefault()
+          f[0].focus()
+        }
+      }
+    }
+    const onFocusIn = (e: FocusEvent) => {
+      if (el && top() && !el.contains(e.target as Node)) (focusables(el)[0] ?? el).focus()
+    }
+    document.addEventListener('keydown', onKey)
+    if (el) document.addEventListener('focusin', onFocusIn)
+    return () => {
+      const wasTop = top()
+      layerStack.splice(layerStack.indexOf(id), 1)
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('focusin', onFocusIn)
+      if (el && wasTop && prev && document.contains(prev)) prev.focus()
+    }
+  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 export function CloseX({ onClick }: { onClick: () => void }) {
@@ -383,13 +452,14 @@ export function CloseX({ onClick }: { onClick: () => void }) {
   )
 }
 
-export function Modal({ open, onClose, width = 480, children, title, dismissable = true }: { open: boolean; onClose: () => void; width?: number; children: ReactNode; title?: ReactNode; dismissable?: boolean }) {
+export function Modal({ open, onClose, width = 480, children, title, dismissable = true, top, label }: { open: boolean; onClose: () => void; width?: number; children: ReactNode; title?: ReactNode; dismissable?: boolean; top?: boolean; label?: string }) {
   const id = useId()
-  useEscape(dismissable ? onClose : () => {})
+  const ref = useRef<HTMLDivElement>(null)
+  useLayer(open, dismissable ? onClose : null, ref)
   if (!open) return null
   return createPortal(
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-canvas/65 p-4" onMouseDown={(e) => dismissable && e.target === e.currentTarget && onClose()}>
-      <div role="dialog" aria-modal aria-labelledby={title ? id : undefined} style={{ width }} className="flex max-h-[calc(100vh-2rem)] max-w-full flex-col gap-4 overflow-y-auto rounded-xl border border-edge bg-panel p-7 text-zinc-100 shadow-[0_24px_64px_rgba(0,0,0,0.5)]">
+    <div className={cx('fixed inset-0 flex items-center justify-center bg-canvas/65 p-4', top ? 'z-[60]' : 'z-40')} onMouseDown={(e) => dismissable && e.target === e.currentTarget && onClose()}>
+      <div ref={ref} tabIndex={-1} role="dialog" aria-modal aria-label={title ? undefined : label} aria-labelledby={title ? id : undefined} style={{ width }} className="flex max-h-[calc(100vh-2rem)] max-w-full flex-col gap-4 overflow-y-auto rounded-xl border border-edge bg-panel p-7 text-zinc-100 shadow-[0_24px_64px_rgba(0,0,0,0.5)] outline-none">
         {title && (
           <div className="flex items-center justify-between gap-4">
             <div id={id} className="text-[15px] font-semibold">
@@ -406,14 +476,18 @@ export function Modal({ open, onClose, width = 480, children, title, dismissable
 }
 
 export function SlideOver({ open, onClose, width = 480, title, children, footer }: { open: boolean; onClose: () => void; width?: number; title: ReactNode; children: ReactNode; footer?: ReactNode }) {
-  useEscape(onClose)
+  const id = useId()
+  const ref = useRef<HTMLElement>(null)
+  useLayer(open, onClose, ref)
   if (!open) return null
   return createPortal(
     <div className="fixed inset-0 z-40">
       <div className="absolute inset-0 bg-canvas/60" onClick={onClose} />
-      <aside role="dialog" aria-modal style={{ width }} className="absolute top-0 right-0 bottom-0 flex max-w-full flex-col border-l border-edge bg-panel shadow-[-24px_0_48px_rgba(0,0,0,0.4)]">
+      <aside ref={ref} tabIndex={-1} role="dialog" aria-modal aria-labelledby={id} style={{ width }} className="absolute top-0 right-0 bottom-0 flex max-w-full flex-col border-l border-edge bg-panel shadow-[-24px_0_48px_rgba(0,0,0,0.4)] outline-none">
         <div className="flex items-center justify-between px-8 pt-7">
-          <div className="text-[15px] font-semibold">{title}</div>
+          <div id={id} className="text-[15px] font-semibold">
+            {title}
+          </div>
           <CloseX onClick={onClose} />
         </div>
         <div className="flex flex-1 flex-col gap-[18px] overflow-y-auto px-8 pt-[18px] pb-7">{children}</div>
@@ -428,35 +502,57 @@ export function Footer({ children, className }: { children: ReactNode; className
   return <div className={cx('flex justify-end gap-2 border-t border-line pt-4', className)}>{children}</div>
 }
 
-/** Tiny popover menu for row actions. */
-export function Menu({ items, label = 'Actions' }: { items: ({ label: string; onClick: () => void; danger?: boolean; disabled?: boolean } | null)[]; label?: string }) {
+/** Tiny popover menu for row actions. Arrow keys move, Escape closes and returns focus to the ⋯ button. */
+export function Menu({ items, label = 'Actions' }: { items: ({ label: string; onClick: () => void; danger?: boolean; disabled?: boolean; hint?: string } | null)[]; label?: string }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const btn = useRef<HTMLButtonElement>(null)
+  const list = useRef<HTMLDivElement>(null)
+  const close = (refocus = true) => {
+    setOpen(false)
+    if (refocus) btn.current?.focus()
+  }
+  useLayer(open, () => close())
   useEffect(() => {
     if (!open) return
+    list.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus()
     const h = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false)
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
   }, [open])
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const els = Array.from(list.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [])
+    const i = els.indexOf(document.activeElement as HTMLElement)
+    const to = e.key === 'ArrowDown' ? (i + 1) % els.length : e.key === 'ArrowUp' ? (i - 1 + els.length) % els.length : e.key === 'Home' ? 0 : e.key === 'End' ? els.length - 1 : -1
+    if (e.key === 'Tab') setOpen(false)
+    if (to < 0 || !els.length) return
+    e.preventDefault()
+    els[to].focus()
+  }
+  const shown = items.filter((x): x is NonNullable<typeof x> => !!x)
   return (
     <div ref={ref} className="relative inline-block" onClick={(e) => e.stopPropagation()}>
-      <button type="button" aria-label={label} aria-expanded={open} onClick={() => setOpen(!open)} className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-line hover:text-zinc-200">
+      <button ref={btn} type="button" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)} className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-line hover:text-zinc-200">
         ⋯
       </button>
       {open && (
-        <div className="absolute top-full right-0 z-30 mt-1 min-w-44 rounded-lg border border-edge bg-panel p-1 shadow-xl">
-          {items.filter(Boolean).map((it) => (
+        <div ref={list} role="menu" aria-label={label} onKeyDown={onKeyDown} className="absolute top-full right-0 z-30 mt-1 min-w-44 rounded-lg border border-edge bg-panel p-1 text-left shadow-xl">
+          {shown.map((it) => (
             <button
-              key={it!.label}
+              key={it.label}
               type="button"
-              disabled={it!.disabled}
+              role="menuitem"
+              tabIndex={-1}
+              disabled={it.disabled}
+              title={it.hint}
               onClick={() => {
-                setOpen(false)
-                it!.onClick()
+                close()
+                it.onClick()
               }}
-              className={cx('block w-full rounded-md px-3 py-1.5 text-left text-[13px] disabled:opacity-40', it!.danger ? 'text-red-400 hover:bg-red-500/10' : 'text-zinc-300 hover:bg-line')}
+              className={cx('block w-full rounded-md px-3 py-1.5 text-left text-[13px] outline-none disabled:opacity-40', it.danger ? 'text-red-400 hover:bg-red-500/10 focus:bg-red-500/10' : 'text-zinc-300 hover:bg-line focus:bg-line')}
             >
-              {it!.label}
+              {it.label}
+              {it.disabled && it.hint && <span className="block text-2xs text-zinc-500">{it.hint}</span>}
             </button>
           ))}
         </div>
