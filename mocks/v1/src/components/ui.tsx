@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useEffect, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, NavLink } from 'react-router-dom'
 
@@ -36,9 +36,14 @@ export function Button({
 /* Form fields                                                        */
 /* ------------------------------------------------------------------ */
 export function Field({ label, optional, hint, children, htmlFor, error }: { label: ReactNode; optional?: boolean | string; hint?: ReactNode; children: ReactNode; htmlFor?: string; error?: string | null }) {
+  // Associate the label with a single form control child, so it has an accessible name.
+  const auto = useId()
+  const el = isValidElement<{ id?: string }>(children) && typeof children.type !== 'string' && !htmlFor ? children : null
+  const id = htmlFor ?? (el ? (el.props.id ?? auto) : undefined)
+  if (el && !el.props.id) children = cloneElement(el, { id })
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={htmlFor} className="text-xs font-medium text-zinc-300">
+      <label htmlFor={id} className="text-xs font-medium text-zinc-300">
         {label}
         {optional && <span className="font-normal text-zinc-600"> · {typeof optional === 'string' ? optional : 'optional'}</span>}
       </label>
