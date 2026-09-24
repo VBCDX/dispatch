@@ -403,7 +403,7 @@ export function PeoplePage() {
   const [role, setRole] = useState<OrgRole>('user')
   const [acting, setActing] = useState<PersonAction | null>(null)
   const list = orgHumans(d)
-  const iAmOwner = myOrgRole(d) === 'Owner'
+  const iAmOwner = isOrgAdmin(d) && myOrgRole(d) === 'Owner'
   return (
     <div>
       <PageTitle actions={isOrgAdmin(d) && <Button variant="primary" onClick={() => setInviting(true)}>Invite person</Button>}>People</PageTitle>
@@ -418,7 +418,7 @@ export function PeoplePage() {
                 <div className="text-zinc-400">{h.email}</div>
                 <div className="text-zinc-400">
                   {h.roles[d.currentOrgId]}
-                  {isLastOwner(d, h) && <div className="text-2xs text-zinc-600">last Owner</div>}
+                  {isLastOwner(d, h) && <div className="text-2xs text-zinc-600">last active Owner</div>}
                 </div>
                 <div>{h.status === 'active' ? <StatusInline tone="green">Active</StatusInline> : h.status === 'invited' ? <StatusInline tone="gray">Invited</StatusInline> : <StatusInline tone="amber">Suspended</StatusInline>}</div>
                 <div className="text-xs text-zinc-400">
@@ -447,8 +447,8 @@ export function PeoplePage() {
                         iAmOwner && h.roles[d.currentOrgId] !== 'Owner' ? { label: 'Transfer ownership…', disabled: h.status !== 'active', hint: h.status !== 'active' ? 'Only to an active person' : undefined, onClick: () => setActing({ kind: 'transfer', h }) } : null,
                         h.status === 'suspended'
                           ? { label: 'Resume', disabled: !canManageHuman(d, h), onClick: () => actions.setHumanStatus(h.id, 'active') }
-                          : { label: 'Suspend…', disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'suspend', h }) },
-                        { label: 'Remove from organization…', danger: true, disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'remove', h }) },
+                          : { label: 'Suspend…', disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last active Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'suspend', h }) },
+                        { label: 'Remove from organization…', danger: true, disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last active Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'remove', h }) },
                       ]}
                     />
                   )}
@@ -520,7 +520,7 @@ function PersonConfirm({ acting, onClose }: { acting: PersonAction | null; onClo
             ['Org role', `${h.roles[d.currentOrgId]} → ${acting.role}`, 'amber'],
             ['Workspaces', acting.role === 'userAdmin' ? 'Administers every workspace in the organization' : `Sees only ${f.memberships.map((w) => w.name).join(', ') || 'no workspaces'} (where they’ve been added)`],
             ...(acting.role === 'user'
-              ? ([['Default admin of', ((ws) => (ws.length ? `${ws.map((w) => w.name).join(', ')} — no longer; ${others.map((x) => x.name).join(' and ')} remain default admins` : 'None'))(d.workspaces.filter((w) => w.orgId === d.currentOrgId && !explicitHumanAdmins(w).length))]] as [string, ReactNode][])
+              ? ([['Default admin of', ((ws) => (ws.length ? `${ws.map((w) => w.name).join(', ')} — no longer; ${others.map((x) => x.name).join(' and ')} remain default admins` : 'None'))(d.workspaces.filter((w) => w.orgId === d.currentOrgId && !explicitHumanAdmins(d, w).length))]] as [string, ReactNode][])
               : []),
             ...standing.slice(0, 2),
           ] as [string, ReactNode, ('amber' | 'red')?][],
@@ -546,7 +546,7 @@ function PersonConfirm({ acting, onClose }: { acting: PersonAction | null; onClo
             rows: [
               ['Org role', `${h.roles[d.currentOrgId]}${acting.kind === 'remove' ? ' → none' : ''}`, 'amber'],
               [acting.kind === 'remove' ? 'Their memberships' : 'Workspaces', f.memberships.map((w) => w.name).join(', ') || 'None', acting.kind === 'remove' && f.memberships.length ? 'amber' : undefined],
-              ...(acting.kind === 'remove' ? ([['Last explicit human admin in', fallback(f.lastExplicitAdminIn)]] as [string, ReactNode][]) : []),
+              ['Only active explicit human admin in', fallback(f.lastExplicitAdminIn)],
               ...standing,
             ] as [string, ReactNode, ('amber' | 'red')?][],
             body:

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { visibleToAgent } from '../lib/access'
 import { AUTH_FLOWS, ENDPOINTS, ERROR_TEXT, openApiSpec, type AuthFlow, type Endpoint, type PathParam } from '../lib/api'
 import { runConsole, type ConsoleResponse } from '../lib/console'
-import { agentById, me, orgAgents, principalName, sessionSecret, useDB, wsById } from '../lib/store'
+import { agentById, iAmActive, me, orgAgents, principalName, sessionSecret, useDB, wsById } from '../lib/store'
 import { KeyholeIcon } from '../components/credential'
 import { Button, Card, Field, MethodBadge, PageTitle, Pill, Select, Textarea, cx } from '../components/ui'
 
@@ -224,9 +224,10 @@ function TryIt() {
           <Textarea rows={Math.min(8, body.split('\n').length + 1)} className="font-mono text-xs" value={body} onChange={(e) => setBodies({ ...bodies, [ep.id]: e.target.value })} />
         </Field>
       )}
-      <Button variant="primary" onClick={run} className="self-start" disabled={!a}>
+      <Button variant="primary" onClick={run} className="self-start" disabled={!a || !iAmActive(d)}>
         Send request
       </Button>
+      {!iAmActive(d) && <div className="-mt-1 text-xs2 text-amber-400">Your account is suspended, so the console won’t send requests for you.</div>}
       {out && (
         <div role="status">
           <div className={cx('mb-1.5 text-xs font-semibold', out.status < 300 ? 'text-green-400' : 'text-red-400')}>

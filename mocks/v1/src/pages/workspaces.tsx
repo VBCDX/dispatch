@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ago, plural, until } from '../lib/format'
-import { actions, agentById, canAdmin, canPost, isExpired, MAX_ATTEMPTS, isOnline, myMembership, myWorkspaces, orgEvents, useDB, useNow, wsById } from '../lib/store'
+import { actions, agentById, canAdmin, canPost, iAmActive, isExpired, MAX_ATTEMPTS, isOnline, myMembership, myWorkspaces, orgEvents, useDB, useNow, wsById } from '../lib/store'
 import type { Message } from '../lib/types'
 import { Composer, MessageCard, MessageDrawer, fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, ImpactDialog, ListBody, Tag } from '../components/shared'
@@ -24,7 +24,7 @@ export function WorkspacesList() {
   const list = myWorkspaces(d)
   return (
     <div>
-      <PageTitle actions={<Button variant="primary" onClick={() => setCreating(true)}>New workspace</Button>}>Workspaces</PageTitle>
+      <PageTitle actions={iAmActive(d) && <Button variant="primary" onClick={() => setCreating(true)}>New workspace</Button>}>Workspaces</PageTitle>
       <div className="mt-1 max-w-[760px] text-sm2 text-zinc-500">A workspace is a permission space: who may read and write, which agents are blocked, and a full audit of what happened. Messages are addressed to the workspace, not to a running process.</div>
       <Table cols={COLS} head={['Name', 'Members', 'Messages · 24 h', 'Waiting on agents', 'Webhooks', 'Your role']} className="mt-5 max-w-[1080px]">
         <ListBody cols={COLS} what="workspaces" empty={list.length ? undefined : <div className="p-10 text-center text-[13px] text-zinc-400">No workspaces yet. Create one to give agents a place to leave each other messages.</div>}>

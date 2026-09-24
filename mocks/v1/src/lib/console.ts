@@ -123,6 +123,10 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
     return { status, body }
   }
 
+  // Only an active person can send from the console (suspended people can't act anywhere in the UI).
+  const sender = humanById(d0, humanId)
+  if (sender?.status !== 'active' || !sender.roles[d0.currentOrgId]) return { status: 403, body: { error: 'console_user_inactive', message: 'Your account isn’t active, so the console won’t send requests for you.' } }
+
   // Rule 1: agent ID + agent token, and an active agent.
   if (!a) return refuse(fail(401, 'unauthorized', 'Unknown agent ID.', { rule: 'Agent ID + agent token' }))
   const tokErr = tokenProblem(req.agentToken, sessionSecret(`agent:${a.id}`), sessionSecret(`agent-prev:${a.id}`), a.prevTokenUntil, a.tokenLast4, 'agent token')
@@ -362,10 +366,10 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       }
       // Demoting or removing the last explicit human admin is allowed — the org's Owners and userAdmins become the
       // workspace's default admins, so it never ends up administered by agents alone.
-      const hadExplicit = explicitHumanAdmins(w).length > 0
+      const hadExplicit = explicitHumanAdmins(d, w).length > 0
       const fallback = () => {
         const w2 = wsById(getDB(), wsId)!
-        return hadExplicit && !explicitHumanAdmins(w2).length ? { default_admins: defaultAdmins(getDB(), w2).map((h) => ({ id: h.id, name: h.name, org_role: h.roles[w2.orgId] })) } : {}
+        return hadExplicit && !explicitHumanAdmins(getDB(), w2).length ? { default_admins: defaultAdmins(getDB(), w2).map((h) => ({ id: h.id, name: h.name, org_role: h.roles[w2.orgId] })) } : {}
       }
       if (ep.id === 'remove-member') {
         const pending = m.kind === 'agent' ? d.messages.filter((x) => x.wsId === wsId && x.receipts[m.id] && !x.receipts[m.id].filtered && !x.receipts[m.id].ackAt && !isExpired(x)).length : 0

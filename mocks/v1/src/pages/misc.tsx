@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ago, initials, plural } from '../lib/format'
-import { actions, isExpired, isOnline, isOrgAdmin, me, myWorkspaces, org, orgAgents, orgEvents, principalName, useDB, useNow, wsById } from '../lib/store'
+import { actions, iAmActive, isExpired, isOnline, isOrgAdmin, me, myWorkspaces, org, orgAgents, orgEvents, principalName, useDB, useNow, wsById } from '../lib/store'
 import { DispatchMark } from '../components/credential'
 import { fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, LogFeed, PrincipalChip, Tag } from '../components/shared'
@@ -298,7 +298,7 @@ export function MySettings() {
           <Field label="Name">
             <div className="flex gap-2">
               <Input value={name} onChange={(e) => setName(e.target.value)} className="bg-rail" />
-              <Button disabled={!name.trim() || name === u.name} onClick={() => actions.renameMe(name.trim())}>
+              <Button disabled={!iAmActive(d) || !name.trim() || name === u.name} onClick={() => actions.renameMe(name.trim())}>
                 Save
               </Button>
             </div>
@@ -335,7 +335,7 @@ export function AccountSettings() {
         <Field label="Organization name">
           <div className="flex gap-2">
             <Input value={name} onChange={(e) => setName(e.target.value)} className="bg-rail" />
-            <Button disabled={!name.trim() || name === o.name} onClick={() => actions.renameOrg(name)}>
+            <Button disabled={!isOrgAdmin(d) || !name.trim() || name === o.name} onClick={() => actions.renameOrg(name)}>
               Rename
             </Button>
           </div>

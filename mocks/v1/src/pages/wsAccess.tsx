@@ -84,6 +84,7 @@ export function WsMembers() {
               <div>
                 <Pill tone={m.role === 'admin' ? 'green' : 'neutral'}>{m.role}</Pill>
                 {m.role !== 'admin' && defaults.some((h) => h.id === m.id) && <div className="mt-0.5 text-2xs text-green-400">default admin (org {humanById(d, m.id)?.roles[d.currentOrgId]})</div>}
+                {m.kind === 'human' && humanById(d, m.id)?.status !== 'active' && <div className="mt-0.5 text-2xs text-amber-400">{humanById(d, m.id)?.status} — can’t act{m.role === 'admin' ? '; not counted as the human admin' : ''}</div>}
                 {m.delegatedBy && <div className="mt-0.5 text-2xs text-zinc-500">delegated by {m.delegatedBy}</div>}
               </div>
               <div>

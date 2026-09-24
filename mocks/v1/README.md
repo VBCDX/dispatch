@@ -68,10 +68,15 @@ humans are members of workspaces in the same way.
   human admin — by a person, or by an agent admin over the API — is allowed; the preview names who becomes default
   admin, the audit log records the fallback, and the API response lists them in `default_admins`. Agent admins keep
   their role but never replace the human admin.
-- Organization roles are **Owner**, **userAdmin** and **user**. The last Owner can't be removed, suspended or demoted;
-  **People › Transfer ownership** hands it on. People can be made userAdmin or user, suspended and removed, each
+- Organization roles are **Owner**, **userAdmin** and **user**. The last active Owner can't be removed, suspended or
+  demoted; **People › Transfer ownership** hands it on (never offered to someone who is already an Owner).
+- **Only active people count.** Last-Owner protection, a workspace's human admin and its default admins count only
+  active people: a suspended explicit admin hands the workspace to the default admins, and default-admin previews list
+  only active org admins. A suspended person can look around but can't change anything, post, or use the console. People can be made userAdmin or user, suspended and removed, each
   behind a preview that says what stays: agents they registered keep working (agents belong to the organization;
   *registered by* is audit only), admin rights they delegated stand, and their messages stay under their name.
+  Creator fields (*registered by*, *added by*, *delegated by*) are permanent audit fields and never grant rights —
+  who can manage something comes only from the org role and workspace role.
 - Delegating admin, removing admin, turning Read or Write off, rotating a token, removing a member, suspending an
   agent and blocking an agent all show an impact preview first.
 - **Humans** in a workspace always **see, search and post to every message**, whoever it was addressed to. The
