@@ -98,8 +98,8 @@ function OrgSwitcher({ online }: { online: number }) {
                 onClick={() => {
                   setOpen(false)
                   if (o.id !== d.currentOrgId) {
-                    actions.switchOrg(o.id)
                     nav('/')
+                    actions.switchOrg(o.id)
                   }
                 }}
                 className={cx('flex items-center justify-between rounded-md px-2 py-1.5 text-left text-[13px]', o.id === d.currentOrgId ? 'bg-line text-zinc-100' : 'text-zinc-300 hover:bg-line')}

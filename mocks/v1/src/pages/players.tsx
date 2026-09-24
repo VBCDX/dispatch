@@ -38,7 +38,7 @@ export function AgentsPage() {
       <Table cols={A_COLS} head={['Agent', 'Agent ID', 'Harness', 'Status', 'Token', 'Workspaces', 'Own filters']} className="mt-5 max-w-[1160px]">
         <ListBody cols={A_COLS} what="agents" empty={list.length ? undefined : <div className="p-10 text-center text-[13px] text-zinc-400">No agents yet. Register one to give it an ID and token it can connect with.</div>}>
           {list.map((a) => {
-            const ws = d.workspaces.filter((w) => w.members.some((m) => m.kind === 'agent' && m.id === a.id))
+            const ws = d.workspaces.filter((w) => w.orgId === a.orgId && w.members.some((m) => m.kind === 'agent' && m.id === a.id))
             const f = a.filters
             const narrowed = [!f.read && 'no read', !f.write && 'no write', f.workspaceBlocklist.length && `${f.workspaceBlocklist.length} ws blocked`, f.agentBlocklist.length && `${f.agentBlocklist.length} authors blocked`].filter(Boolean)
             return (
@@ -154,9 +154,10 @@ export function AgentDetail() {
   if (access === 'switching') return null
   if (!a || !f || access === 'denied') return <NoAccess what="agent" back={{ to: '/agents', label: 'Back to agents' }} />
   const admin = isOrgAdmin(d)
-  const memberships = d.workspaces.filter((w) => w.members.some((m) => m.kind === 'agent' && m.id === a.id))
-  const allWs = d.workspaces.filter((w) => w.orgId === d.currentOrgId)
-  const inbox = d.messages.filter((m) => m.receipts[a.id]).sort((x, y) => y.createdAt - x.createdAt).slice(0, 12)
+  // Only the agent's own organization, whichever org is on screen.
+  const memberships = d.workspaces.filter((w) => w.orgId === a.orgId && w.members.some((m) => m.kind === 'agent' && m.id === a.id))
+  const allWs = d.workspaces.filter((w) => w.orgId === a.orgId)
+  const inbox = d.messages.filter((m) => m.receipts[a.id] && wsById(d, m.wsId)?.orgId === a.orgId).sort((x, y) => y.createdAt - x.createdAt).slice(0, 12)
   const dirty = JSON.stringify(f) !== JSON.stringify(a.filters)
   const others = orgAgents(d).filter((x) => x.id !== a.id)
   // Saving filters that take access away gets an impact preview first.
@@ -413,7 +414,8 @@ export function PeoplePage() {
       <Table cols={P_COLS} head={['Name', 'Email', 'Org role', 'Status', 'Workspaces', 'Last active', '']} className="mt-5 max-w-[1120px]">
         <ListBody cols={P_COLS} what="people">
           {list.map((h) => {
-            const ws = d.workspaces.filter((w) => w.members.some((m) => m.kind === 'human' && m.id === h.id))
+            // This organization's workspaces only — a person's memberships elsewhere are not shown here.
+            const ws = d.workspaces.filter((w) => w.orgId === d.currentOrgId && w.members.some((m) => m.kind === 'human' && m.id === h.id))
             return (
               <Row key={h.id} cols={P_COLS}>
                 <PrincipalChip p={{ kind: 'human', id: h.id }} />
@@ -553,7 +555,7 @@ function PersonConfirm({ acting, onClose }: { acting: PersonAction | null; onClo
             ] as [string, ReactNode, ('amber' | 'red')?][],
             body:
               acting.kind === 'suspend'
-                ? 'Stops what they can do next — they can’t sign in or act until resumed. Losing permission doesn’t undo what was already done, and the audit log keeps their name on all of it.'
+                ? `Blocks them from ${org(d)?.name} entirely until resumed — they can’t open anything here (their other organizations aren’t affected). Resume restores the status they had before. Losing permission doesn’t undo what was already done, and the audit log keeps their name on all of it.`
                 : 'Losing permission doesn’t undo what was already done. Agents they registered keep working, admin rights they delegated stand, and the audit log keeps their name on all of it.',
             confirm: acting.kind === 'suspend' ? 'Suspend' : 'Remove from organization',
             tone: 'danger' as const,

@@ -465,11 +465,11 @@ function mayWrite(d: DB, wsId: string, by?: Actor) {
   return by?.kind === 'agent' ? evaluate(d, by.id, wsId, 'write').allowed : canPost(d, w)
 }
 /**
- * Expiring a message: anyone who can write to its workspace. Authorship grants nothing (rule 3) — the author
- * has no extra rights over a message once it is sent.
+ * Expiring a message ends it for everyone (queued receipts, listeners, pending gates), so only workspace admins —
+ * human or agent — may do it, on any message including their own. Authorship and write access grant nothing (rule 3).
  */
 export function mayExpire(d: DB, m: Message, by?: Actor) {
-  return mayWrite(d, m.wsId, by)
+  return mayAdmin(d, m.wsId, by)
 }
 /** Rotating a listener's password hands out a credential, so it's reserved for workspace admins. */
 export function mayRotateListener(d: DB, m: Message, by?: Actor) {
@@ -487,7 +487,7 @@ export function humanFootprint(d: DB, h: Human) {
     agents: orgAgents(d).filter((a) => mine(a.createdById, a.createdBy)),
     delegations: ws.flatMap((w) => w.members.filter((m) => m.role === 'admin' && !(m.kind === 'human' && m.id === h.id) && mine(m.delegatedById, m.delegatedBy)).map((m) => ({ w, m }))),
     added: ws.flatMap((w) => w.members.filter((m) => !(m.kind === 'human' && m.id === h.id) && mine(m.addedById, m.addedBy)).map((m) => ({ w, m }))),
-    messages: d.messages.filter((m) => m.author.kind === 'human' && m.author.id === h.id).length,
+    messages: d.messages.filter((m) => m.author.kind === 'human' && m.author.id === h.id && ws.some((w) => w.id === m.wsId)).length,
     memberships: ws.filter((w) => w.members.some((m) => m.kind === 'human' && m.id === h.id)),
     lastExplicitAdminIn: ws.filter((w) => explicitHumanAdmins(d, w).length === 1 && explicitHumanAdmins(d, w)[0].id === h.id),
   }
@@ -810,18 +810,40 @@ export const actions = {
     })
   },
   /** Suspending a person stops what they can do next. Nothing they created or granted changes. */
+  /** 'suspended' suspends; 'active' resumes — back to the status they had before (an invitee stays invited). */
   setHumanStatus(id: string, status: 'active' | 'suspended') {
     update((d) => {
       const h = humanById(d, id)
+      const org_ = d.currentOrgId
+      const cur = statusIn(h, org_)
       // Only this organization's membership changes; the person's other organizations are untouched.
-      if (!h || !h.roles[d.currentOrgId] || statusIn(h, d.currentOrgId) === status || !canManageHuman(d, h) || (status === 'suspended' && isLastOwner(d, h))) return
-      const before = statusIn(h, d.currentOrgId)!
+      if (!h || !cur || !canManageHuman(d, h)) return
+      if (status === 'suspended' ? cur === 'suspended' || isLastOwner(d, h) : cur !== 'suspended') return
+      const before = cur
       const lastIn = humanFootprint(d, h).lastExplicitAdminIn
-      h.orgStatus = { ...h.orgStatus, [d.currentOrgId]: status }
+      if (status === 'suspended') {
+        h.suspendedFrom = { ...h.suspendedFrom, [org_]: cur }
+        h.orgStatus = { ...h.orgStatus, [org_]: 'suspended' }
+      } else {
+        const back = h.suspendedFrom?.[org_] ?? 'active'
+        h.orgStatus = { ...h.orgStatus, [org_]: back }
+        if (h.suspendedFrom) delete h.suspendedFrom[org_]
+      }
+      const after = statusIn(h, org_)!
       // Suspending the only active explicit human admin of a workspace hands it to the default admins.
       if (status === 'suspended') for (const w of lastIn) logDefaultAdmins(d, w, true)
       const f = humanFootprint(d, h)
-      log(d, { severity: status === 'suspended' ? 'warn' : 'info', object: `${status === 'suspended' ? 'Suspended' : 'Resumed'} ${h.name}`, result: status === 'suspended' ? `Unaffected: ${f.agents.length} agents they registered, ${f.delegations.length} admin delegations` : 'Done', detail: [['Human ID', h.id], ['Before', before], ['After', status]] })
+      log(d, { severity: status === 'suspended' ? 'warn' : 'info', object: `${status === 'suspended' ? 'Suspended' : 'Resumed'} ${h.name}`, result: status === 'suspended' ? `Unaffected: ${f.agents.length} agents they registered, ${f.delegations.length} admin delegations` : after === 'invited' ? 'Back to invited — still has to accept' : 'Done', detail: [['Human ID', h.id], ['Before', before], ['After', after]] })
+    })
+  },
+  /** The current person accepts their invitation to the current organization. Only then do they get any access. */
+  acceptInvite() {
+    update((d) => {
+      const u = me(d)
+      const o = org(d)
+      if (!u || !o || statusIn(u, d.currentOrgId) !== 'invited') return
+      u.orgStatus = { ...u.orgStatus, [d.currentOrgId]: 'active' }
+      log(d, { object: `${u.name} accepted the invitation to ${o.name}`, detail: [['Human ID', u.id], ['Before', 'invited'], ['After', 'active']] })
     })
   },
   /**

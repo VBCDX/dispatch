@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { clock, initials } from '../lib/format'
-import { accessImpact, ALREADY_DELIVERED, actions, actorKey, actorLabel, humanById, me, useDB, wsLabel } from '../lib/store'
+import { accessImpact, ALREADY_DELIVERED, actorKey, actorLabel, humanById, me, useDB, wsLabel } from '../lib/store'
 import type { DB } from '../lib/types'
 import type { AuditEvent, Author, Harness } from '../lib/types'
 import { CopyChip } from './credential'
@@ -40,11 +40,9 @@ export function ListBody({ cols, what, children, empty, rows = 3 }: { cols: stri
  */
 export function useRecordOrg(orgId: string | undefined): 'ok' | 'switching' | 'denied' {
   const d = useDB()
+  // The switch itself happens in AppShell, once per arrival at the URL (before any org gate applies).
   const member = !!orgId && !!me(d)?.roles[orgId]
   const elsewhere = !!orgId && orgId !== d.currentOrgId
-  useEffect(() => {
-    if (elsewhere && member) actions.switchOrg(orgId!)
-  }, [elsewhere, member, orgId])
   if (!elsewhere) return 'ok'
   return member ? 'switching' : 'denied'
 }

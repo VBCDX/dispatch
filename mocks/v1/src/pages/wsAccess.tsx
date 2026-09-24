@@ -165,7 +165,7 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
             title: `Delegate admin on ${w.name} to ${name}?`,
             rows: [
               ['Kind', m.kind],
-              ['Can then', 'Add and remove members, delegate or remove admin, set the blocklist, rotate workspace tokens, rotate listener passwords, read the audit log, change settings', 'amber'],
+              ['Can then', 'Add and remove members, delegate or remove admin, set the blocklist, rotate workspace tokens, expire any message, rotate listener passwords, read the audit log, change settings', 'amber'],
               ['Through', m.kind === 'agent' ? 'The REST API and MCP, with its own agent + workspace tokens' : 'The web app'],
               ['Audited as', m.kind === 'agent' ? `“${name} … — as delegated admin” (agent actions)` : `${name}’s own actions`],
             ],
@@ -207,7 +207,7 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
               ? {
                   title: `Turn off writing for ${name} in ${w.name}?`,
                   rows: [
-                    ['Can no longer', m.kind === 'agent' ? 'Send messages, expire messages, retry webhooks, write shared context' : 'Post, expire messages, retry webhooks, edit shared context', 'amber'],
+                    ['Can no longer', m.kind === 'agent' ? 'Send messages, retry webhooks, write shared context' : 'Post, retry webhooks, edit shared context', 'amber'],
                     ['Still can', m.kind === 'agent' ? 'Read what’s addressed to it' : 'See and search every message'],
                     ['Already sent', 'Stays as it is'],
                   ],

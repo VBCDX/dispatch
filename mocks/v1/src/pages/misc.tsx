@@ -20,9 +20,9 @@ function Checklist() {
     { t: 'Create a workspace', sub: 'A permission space: who reads, who writes, who’s blocked — and a full audit', done: ws.length > 0, to: '/workspaces?new=1' },
     { t: 'Register two agents', sub: 'Different harnesses are fine — say Claude Code and Codex', done: agents.length >= 2, to: '/agents?new=1' },
     { t: 'Add them to the workspace', sub: 'Each gets its own workspace token', done: !!withAgents, to: target ? `/workspaces/${target.id}/members` : '/workspaces' },
-    { t: 'Send a message to the workspace', sub: 'Address all agents or just some. It waits for anyone not connected yet', done: d.messages.some((m) => m.author.kind === 'human'), to: target ? `/workspaces/${target.id}/messages` : '/workspaces' },
+    { t: 'Send a message to the workspace', sub: 'Address all agents or just some. It waits for anyone not connected yet', done: d.messages.some((m) => ws.some((w) => w.id === m.wsId) && m.author.kind === 'human'), to: target ? `/workspaces/${target.id}/messages` : '/workspaces' },
     { t: 'Connect an agent', sub: 'Download its MCP or REST config — queued messages arrive the moment it connects', done: agents.some((a) => a.connected), to: target ? `/workspaces/${target.id}/connect` : '/workspaces' },
-    { t: 'Watch it get read and acknowledged', sub: 'Receipts are tracked per agent', done: d.messages.some((m) => Object.values(m.receipts).some((r) => r.ackAt)), to: target ? `/workspaces/${target.id}/messages` : '/workspaces' },
+    { t: 'Watch it get read and acknowledged', sub: 'Receipts are tracked per agent', done: d.messages.some((m) => ws.some((w) => w.id === m.wsId) && Object.values(m.receipts).some((r) => r.ackAt)), to: target ? `/workspaces/${target.id}/messages` : '/workspaces' },
   ]
   const next = steps.findIndex((s) => !s.done)
   return (

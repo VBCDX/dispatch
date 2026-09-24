@@ -17,6 +17,8 @@ export interface Human {
   roles: Record<string, OrgRole>
   /** …and their status there. Suspension is per org membership: suspended in one org, a person still works in another. */
   orgStatus: Record<string, PersonStatus>
+  /** While suspended in an org, the status they had before — Resume restores it (an invitee stays invited). */
+  suspendedFrom?: Record<string, PersonStatus>
   lastActive: number | null
   sessions: { device: string; place: string; at: number }[]
 }

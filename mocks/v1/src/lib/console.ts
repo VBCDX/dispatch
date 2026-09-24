@@ -146,7 +146,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
     if (ep.id === 'me') return ok(200, { id: a.id, label: a.label, harness: a.harness, status: a.status, filters: filtersJson(a) })
     if (ep.id === 'my-workspaces') {
       const d = getDB()
-      const list = d.workspaces.filter((x) => x.members.some((m) => m.kind === 'agent' && m.id === a.id))
+      const list = d.workspaces.filter((x) => x.orgId === a.orgId && x.members.some((m) => m.kind === 'agent' && m.id === a.id))
       return ok(200, { workspaces: list.map((x) => { const r = evaluate(d, a.id, x.id, 'read'); const m = x.members.find((mm) => mm.id === a.id)!; return { id: x.id, name: x.name, role: m.role, read: r.allowed, write: evaluate(d, a.id, x.id, 'write').allowed, blocked: r.allowed ? null : r.reason } }) })
     }
     if (ep.id === 'filters') {
@@ -269,7 +269,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       const m = actionableMsg()
       if (!m) return notFound()
       if (isExpired(m)) return refuse(fail(409, 'already_expired', `${m.id} already expired.`))
-      if (!mayExpire(d, m, by)) return refuse(fail(403, 'forbidden', 'Expiring needs write access in this workspace. Authorship grants nothing extra.', { rule: 'Membership allows write' }))
+      if (!mayExpire(d, m, by)) return refuse(fail(403, 'forbidden', 'Only workspace admins can expire a message — authorship and write access grant nothing here.', { rule: 'Membership allows admin' }))
       const pending = Object.values(m.receipts).filter((r) => !r.filtered && !r.deliveredAt).length
       actions.expireNow(m.id, by)
       return ok(200, { id: m.id, expires_at: iso(getDB().messages.find((x) => x.id === m.id)?.expiresAt), never_delivered: pending })
