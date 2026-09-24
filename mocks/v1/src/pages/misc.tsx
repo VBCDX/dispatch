@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ago, initials, plural } from '../lib/format'
-import { actions, isExpired, isOnline, me, myWorkspaces, org, orgAgents, orgEvents, principalName, useDB, useNow, wsById } from '../lib/store'
+import { actions, isExpired, isOnline, isOrgAdmin, me, myWorkspaces, org, orgAgents, orgEvents, principalName, useDB, useNow, wsById } from '../lib/store'
 import { DispatchMark } from '../components/credential'
 import { fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, LogFeed, PrincipalChip, Tag } from '../components/shared'
@@ -251,12 +251,17 @@ export function SearchPage() {
 export function AuditPage() {
   const d = useDB()
   const ids = new Set(myWorkspaces(d).map((w) => w.id))
+  // Owners and org admins audit the whole org, deleted workspaces included; members see their workspaces.
+  const all = isOrgAdmin(d)
   return (
     <div className="max-w-[1120px]">
       <PageTitle>Audit</PageTitle>
-      <div className="mt-1 text-sm2 text-zinc-500">Messages, per-agent receipts, webhook calls, access decisions and admin changes — including changes made by agents with delegated admin.</div>
+      <div className="mt-1 text-sm2 text-zinc-500">
+        Messages, per-agent receipts, webhook calls, access decisions and admin changes — including changes made by agents with delegated admin.
+        {all ? ' You see the whole organization, including workspaces that were deleted.' : ' You see the workspaces you belong to.'}
+      </div>
       <div className="mt-4">
-        <AuditLog events={orgEvents(d).filter((e) => !e.wsId || ids.has(e.wsId))} />
+        <AuditLog events={orgEvents(d).filter((e) => all || !e.wsId || ids.has(e.wsId))} />
       </div>
     </div>
   )

@@ -73,7 +73,7 @@ function NewWorkspaceModal({ open, onClose }: { open: boolean; onClose: () => vo
       setExpiry('24')
     }
   }, [open]) // eslint-disable-line
-  const clash = myWorkspaces(d).some((w) => w.name.toLowerCase() === name.trim().toLowerCase())
+  const clash = d.workspaces.some((w) => w.orgId === d.currentOrgId && w.name.toLowerCase() === name.trim().toLowerCase())
   return (
     <Modal open={open} onClose={onClose} width={500} title="New workspace">
       <Field label="Name" error={clash ? 'A workspace with that name exists.' : null}>
@@ -172,7 +172,7 @@ export function WorkspaceDetail() {
           ['Open listeners', String(d.messages.filter((m) => m.wsId === w.id && m.webhook?.mode === 'listen' && !isExpired(m)).length)],
           ['Shared context', plural(d.notes.filter((n) => n.wsId === w.id).length, 'note')],
         ]}
-        body="Messages and context are deleted. The audit log keeps the record of what happened here."
+        body={`Messages and context are deleted. The audit log keeps the record of what happened here — org admins find it in Audit as “${w.name} (deleted)”.`}
         confirmLabel="Delete workspace"
         onConfirm={() => {
           actions.deleteWorkspace(w.id)

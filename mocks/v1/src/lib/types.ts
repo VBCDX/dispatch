@@ -192,6 +192,8 @@ export interface DB {
   humans: Human[]
   agents: Agent[]
   workspaces: Workspace[]
+  /** Tombstones: a deleted workspace's audit rows keep resolving to its name. */
+  deletedWorkspaces: { id: string; orgId: string; name: string; deletedAt: number; deletedBy: string }[]
   messages: Message[]
   notes: ContextNote[]
   events: AuditEvent[]

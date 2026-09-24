@@ -27,6 +27,7 @@ export function freshDB(): DB {
     humans: [dana(now)],
     agents: [],
     workspaces: [],
+    deletedWorkspaces: [],
     messages: [],
     notes: [],
     events: [{ id: 'ev_0', at: now - 2 * MIN, orgId: 'org_acme', type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Created organization Acme Corp', result: 'Done', trk: 'trk_0rg1n1t0' }],
@@ -233,6 +234,7 @@ export function populatedDB(): DB {
         retentionDays: 30,
       },
     ],
+    deletedWorkspaces: [],
     messages,
     notes: [
       { id: 'nt_1', wsId: 'wks_rel', title: 'Release 4.2 checklist', tags: ['release-4.2', 'plan'], version: 3, updatedBy: 'planner', updatedAt: now - 2 * HOUR, history: [{ version: 1, by: 'planner', at: now - 2 * DAY }, { version: 2, by: 'Dana Keller', at: now - 1 * DAY }, { version: 3, by: 'planner', at: now - 2 * HOUR }], body: '1. Cut release/4.2 (builder)\n2. Full suite green, or failures triaged (builder)\n3. Security pass on SSO changes (reviewer)\n4. Staging rollout + smoke suite (deployer)\n5. QA sign-off (Mia)\n6. Prod rollout behind the release flag (deployer, human approval)' },

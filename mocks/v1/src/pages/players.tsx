@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
-import { actions, agentById, isOnline, isOrgAdmin, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
+import { actions, agentById, emailTaken, isOnline, isOrgAdmin, labelTaken, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
 import type { Agent, AgentFilters, Harness, OrgRole } from '../lib/types'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
@@ -90,7 +90,7 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
       setDesc('')
     }
   }, [open]) // eslint-disable-line
-  const clash = orgAgents(d).some((a) => a.label === label.trim() && a.status !== 'revoked')
+  const clash = labelTaken(d, label)
   const register = () => {
     const made = actions.createAgent({ label: label.trim(), harness, description: desc })
     onClose()
@@ -109,7 +109,7 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
   }
   return (
     <Modal open={open} onClose={onClose} width={480} title="Register agent">
-      <Field label="Label" hint="Short and lowercase reads best in logs." error={clash ? 'An active agent already uses this label.' : null}>
+      <Field label="Label" hint="Short and lowercase reads best in logs." error={clash ? 'An agent in this org already uses this label (revoked agents included), so the audit log stays unambiguous.' : null}>
         <Input mono value={label} onChange={(e) => setLabel(e.target.value)} placeholder="planner" autoFocus />
       </Field>
       <Field label="Harness" hint="Informational — membership never depends on the harness.">
@@ -383,7 +383,7 @@ export function PeoplePage() {
         </ListBody>
       </Table>
       <Modal open={inviting} onClose={() => setInviting(false)} width={440} title="Invite person">
-        <Field label="Email">
+        <Field label="Email" error={emailTaken(d, email) ? `${email.trim()} is already in ${d.orgs.find((o) => o.id === d.currentOrgId)?.name}.` : null}>
           <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
         </Field>
         <Field label="Org role" hint="Owner and orgAdmin can see and administer every workspace. Members see the workspaces they’re added to.">
@@ -404,7 +404,7 @@ export function PeoplePage() {
           <Button
             size="lg"
             variant="primary"
-            disabled={!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)}
+            disabled={!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || emailTaken(d, email)}
             onClick={() => {
               actions.inviteHuman(email, role)
               setInviting(false)

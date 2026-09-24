@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { clock, initials } from '../lib/format'
-import { useDB, wsById } from '../lib/store'
+import { actorKey, actorLabel, useDB, wsLabel } from '../lib/store'
 import type { AuditEvent, Author, Harness } from '../lib/types'
 import { CopyChip } from './credential'
 import { Avatar, Button, ErrorBox, Field, Footer, Input, Modal, SkeletonRows, cx, useFakeLoad } from './ui'
@@ -155,11 +155,13 @@ export function LogRow({ e, compact, expanded, onToggle, fresh }: { e: AuditEven
         <span className={cx('size-[7px] min-w-[7px] rounded-full', DOT[e.severity])} />
         {!compact && <span className={cx('rounded-full border px-2 py-0.5 text-2xs font-semibold', TYPE_TONE[e.type])}>{e.type}</span>}
         <span className="flex min-w-0 items-center gap-2">
-          <span className={cx('shrink-0', e.actorKind === 'agent' ? 'font-mono text-[12.5px] text-zinc-300' : 'text-zinc-300')}>{e.actor}</span>
-          {e.actorKind === 'agent' && !compact && <span className="text-2xs text-zinc-600">agent</span>}
+          <span className={cx('shrink-0', e.actorKind === 'agent' ? 'font-mono text-[12.5px] text-zinc-300' : 'text-zinc-300')} title={e.actorId ? `${e.actorKind} · ${e.actorId}` : e.actorKind}>
+            {actorLabel(d, e)}
+          </span>
+          {(e.actorKind === 'agent' || e.actorKind === 'webhook') && !compact && <span className="text-2xs text-zinc-600">{e.actorKind}</span>}
           <span className="text-zinc-600">→</span>
           <span className="truncate text-zinc-400">{e.object}</span>
-          {!compact && e.wsId && <span className="shrink-0 text-xs text-zinc-600">· {wsById(d, e.wsId)?.name}</span>}
+          {!compact && e.wsId && <span className="shrink-0 text-xs text-zinc-600">· {wsLabel(d, e.wsId)}</span>}
         </span>
         <span className={cx('ml-auto shrink-0 whitespace-nowrap', resultTone(e))}>{e.result}</span>
         <CopyChip value={e.trk} variant="inline" />
@@ -222,14 +224,15 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [seen] = useState(() => new Set(events.map((e) => e.id)))
   const { state, retry } = useListState()
-  const actors = Array.from(new Set(events.map((e) => e.actor))).sort()
+  const actors = Array.from(new Map(events.map((e) => [actorKey(e), `${actorLabel(d, e)}${e.actorKind === 'human' || e.actorKind === 'system' ? '' : ` · ${e.actorKind}`}`])).entries()).sort((a, b) => a[1].localeCompare(b[1]))
+  const wsOptions = Array.from(new Set(events.map((e) => e.wsId).filter((x): x is string => !!x))).map((id) => [id, wsLabel(d, id)!] as const).sort((a, b) => a[1].localeCompare(b[1]))
   const filtered = events.filter((e) => {
     if (q) {
       const s = q.toLowerCase()
-      if (![e.trk, e.actor, e.object, e.type, e.result, e.actorId ?? '', e.wsId ?? ''].some((x) => x.toLowerCase().includes(s))) return false
+      if (![e.trk, e.actor, actorLabel(d, e), e.object, e.type, e.result, e.reason ?? '', e.actorId ?? '', e.wsId ?? ''].some((x) => x.toLowerCase().includes(s))) return false
     }
     if (type && e.type !== type) return false
-    if (actor && e.actor !== actor) return false
+    if (actor && actorKey(e) !== actor) return false
     if (ws && e.wsId !== ws) return false
     if (result === 'ok' && e.severity !== 'ok') return false
     if (result === 'blocked' && e.severity !== 'blocked') return false
@@ -237,8 +240,11 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
     return true
   })
   const exportCsv = () => {
-    const body = filtered.map((e) => [new Date(e.at).toISOString(), e.type, e.actor, e.object, e.result, e.trk].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
-    const url = URL.createObjectURL(new Blob(['time,type,actor,object,result,tracking_code\n' + body], { type: 'text/csv' }))
+    const cols = ['time', 'workspace_id', 'workspace', 'type', 'severity', 'actor_kind', 'actor_id', 'actor', 'object', 'result', 'reason', 'tracking_code', 'detail']
+    const body = filtered
+      .map((e) => [new Date(e.at).toISOString(), e.wsId ?? '', wsLabel(d, e.wsId) ?? '', e.type, e.severity, e.actorKind, e.actorId ?? '', actorLabel(d, e), e.object, e.result, e.reason ?? '', e.trk, e.detail ? JSON.stringify(Object.fromEntries(e.detail)) : ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+      .join('\n')
+    const url = URL.createObjectURL(new Blob([cols.join(',') + '\n' + body], { type: 'text/csv' }))
     const a = document.createElement('a')
     a.href = url
     a.download = 'dispatch-audit.csv'
@@ -255,19 +261,19 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
           ))}
         </Filter>
         <Filter value={actor} onChange={setActor} label="Actor">
-          {actors.map((a) => (
-            <option key={a}>{a}</option>
+          {actors.map(([k, l]) => (
+            <option key={k} value={k}>
+              {l}
+            </option>
           ))}
         </Filter>
         {!hideWorkspaceFilter && (
           <Filter value={ws} onChange={setWs} label="Workspace">
-            {d.workspaces
-              .filter((w) => w.orgId === d.currentOrgId)
-              .map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.name}
-                </option>
-              ))}
+            {wsOptions.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
           </Filter>
         )}
         <Filter value={result} onChange={setResult} label="Result">

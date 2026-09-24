@@ -74,6 +74,24 @@ export const wsById = (d: DB, id: string | undefined) => d.workspaces.find((w) =
 export const orgAgents = (d: DB) => d.agents.filter((a) => a.orgId === d.currentOrgId)
 export const orgHumans = (d: DB) => d.humans.filter((h) => h.roles[d.currentOrgId])
 export const orgEvents = (d: DB) => d.events.filter((e) => e.orgId === d.currentOrgId)
+/** A workspace's name for display, including deleted ones ("Incidents (deleted)"). */
+export const wsLabel = (d: DB, id: string | undefined) => {
+  if (!id) return undefined
+  const w = wsById(d, id)
+  if (w) return w.name
+  const t = d.deletedWorkspaces.find((x) => x.id === id)
+  return t ? `${t.name} (deleted)` : id
+}
+/** An audit row's actor under its current name — rows store the ID, so renames don't split or orphan history. */
+export function actorLabel(d: DB, e: AuditEvent) {
+  if (e.actorKind === 'agent') return agentById(d, e.actorId)?.label ?? e.actor
+  if (e.actorKind === 'human') return humanById(d, e.actorId)?.name ?? e.actor
+  return e.actor
+}
+export const actorKey = (e: AuditEvent) => `${e.actorKind}:${e.actorId ?? e.actor}`
+/** Agent labels are unique in an org, case-insensitively and including revoked agents. */
+export const labelTaken = (d: DB, label: string, except?: string) => orgAgents(d).some((a) => a.id !== except && a.label.toLowerCase() === label.trim().toLowerCase())
+export const emailTaken = (d: DB, email: string) => orgHumans(d).some((h) => h.email.toLowerCase() === email.trim().toLowerCase())
 export const principalName = (d: DB, p: Author) => (p.kind === 'agent' ? (agentById(d, p.id)?.label ?? p.id) : p.kind === 'webhook' ? `listener ${p.id}` : (humanById(d, p.id)?.name ?? p.id))
 
 /** Workspaces the current human can see: org admins see all, others see their memberships. */
@@ -319,17 +337,31 @@ export const actions = {
   updateWorkspace(id: string, patch: Partial<Pick<Workspace, 'name' | 'description' | 'defaultExpiryHours' | 'retentionDays'>>) {
     update((d) => {
       const w = wsById(d, id)
-      if (w) Object.assign(w, patch)
+      if (!w) return
+      const changed = (Object.keys(patch) as (keyof typeof patch)[]).filter((k) => patch[k] !== w[k])
+      if (!changed.length) return
+      const before = changed.map((k) => `${k} ${String(w[k])}`).join(', ')
+      Object.assign(w, patch)
+      log(d, { wsId: id, object: `Changed ${w.name} settings · ${changed.map((k) => `${k} → ${String(w[k])}`).join(', ')}`, detail: [['Before', before]] })
     })
   },
   deleteWorkspace(id: string) {
     update((d) => {
       const w = wsById(d, id)
       if (!w) return
+      const msgs = d.messages.filter((m) => m.wsId === id)
+      const detail: [string, string][] = [
+        ['Members', `${w.members.filter((m) => m.kind === 'human').length} humans · ${w.members.filter((m) => m.kind === 'agent').length} agents (workspace tokens revoked)`],
+        ['Messages deleted', String(msgs.length)],
+        ['Open listeners closed', String(msgs.filter((m) => m.webhook?.mode === 'listen' && !isExpired(m)).length)],
+        ['Shared context deleted', String(d.notes.filter((n) => n.wsId === id).length)],
+        ['Workspace ID', id],
+      ]
       d.workspaces = d.workspaces.filter((x) => x.id !== id)
       d.messages = d.messages.filter((m) => m.wsId !== id)
       d.notes = d.notes.filter((n) => n.wsId !== id)
-      log(d, { object: `Deleted workspace ${w.name}` })
+      d.deletedWorkspaces.push({ id, orgId: w.orgId, name: w.name, deletedAt: Date.now(), deletedBy: me(d).name })
+      log(d, { wsId: id, severity: 'warn', object: `Deleted workspace ${w.name}`, result: 'Deleted · audit kept', detail })
     })
   },
 
@@ -409,6 +441,7 @@ export const actions = {
     const id = shortId('agt')
     sessionSecrets.set(`agent:${id}`, token)
     update((d) => {
+      if (labelTaken(d, a.label)) return
       d.agents.push({ id, orgId: d.currentOrgId, label: a.label, harness: a.harness, description: a.description, tokenLast4: token.slice(-4), status: 'active', createdAt: Date.now(), createdBy: me(d).name, lastSeen: null, connected: false, filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: [] } })
       log(d, { object: `Registered agent ${a.label} (${a.harness}) · ${id}` })
     })
@@ -447,7 +480,10 @@ export const actions = {
   renameAgent(id: string, label: string) {
     update((d) => {
       const a = agentById(d, id)
-      if (a && label.trim()) a.label = label.trim()
+      if (!a || !label.trim() || labelTaken(d, label, id)) return
+      const old = a.label
+      a.label = label.trim()
+      log(d, { object: `Renamed agent ${old} → ${a.label} · ${a.id}` })
     })
   },
   /** Prototype: the agent opens its MCP session / starts polling. Queued messages get delivered. */
@@ -475,6 +511,7 @@ export const actions = {
   /* People */
   inviteHuman(email: string, role: OrgRole) {
     update((d) => {
+      if (emailTaken(d, email)) return
       d.humans.push({ id: uid('u'), name: email.split('@')[0].replace(/^./, (c) => c.toUpperCase()), email, roles: { [d.currentOrgId]: role }, status: 'invited', lastActive: null, sessions: [] })
       log(d, { object: `Invited ${email} as ${role}` })
     })
@@ -653,12 +690,21 @@ export const actions = {
     update((d) => void (d.notifications[k] = !d.notifications[k]))
   },
   renameMe(name: string) {
-    update((d) => void (me(d).name = name))
+    update((d) => {
+      const u = me(d)
+      if (!name.trim() || u.name === name.trim()) return
+      const old = u.name
+      u.name = name.trim()
+      log(d, { object: `Renamed themselves ${old} → ${u.name}`, detail: [['Human ID', u.id]] })
+    })
   },
   renameOrg(name: string) {
     update((d) => {
       const o = org(d)
-      if (o && name.trim()) o.name = name.trim()
+      if (!o || !name.trim() || o.name === name.trim()) return
+      const old = o.name
+      o.name = name.trim()
+      log(d, { object: `Renamed organization ${old} → ${o.name}`, detail: [['Org ID', o.id]] })
     })
   },
 }
