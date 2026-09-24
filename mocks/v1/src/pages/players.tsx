@@ -407,6 +407,9 @@ export function PeoplePage() {
   const [acting, setActing] = useState<PersonAction | null>(null)
   const list = orgHumans(d)
   const iAmOwner = isOrgAdmin(d) && myOrgRole(d) === 'Owner'
+  // Last active *in this organization*, from its own audit log. Activity elsewhere is never shown here.
+  const lastActiveHere = new Map<string, number>()
+  for (const e of orgEvents(d)) if (e.actorKind === 'human' && e.actorId && !lastActiveHere.has(e.actorId)) lastActiveHere.set(e.actorId, e.at)
   return (
     <div>
       <PageTitle actions={isOrgAdmin(d) && <Button variant="primary" onClick={() => setInviting(true)}>Invite person</Button>}>People</PageTitle>
@@ -437,7 +440,7 @@ export function PeoplePage() {
                   })}
                   {!ws.length && '—'}
                 </div>
-                <div className="text-zinc-500">{h.id === d.currentUserId ? 'Now' : ago(h.lastActive, now)}</div>
+                <div className="text-zinc-500">{h.id === d.currentUserId ? 'Now' : lastActiveHere.has(h.id) ? ago(lastActiveHere.get(h.id)!, now) : '—'}</div>
                 <div className="text-right">
                   {isOrgAdmin(d) && h.id !== d.currentUserId && (
                     <Menu
