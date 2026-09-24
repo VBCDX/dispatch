@@ -76,7 +76,11 @@ humans are members of workspaces in the same way.
 - **Suspension is per organization.** It's stored on the person's membership in one organization, checked only there,
   and logged only there. Suspended in one org, a person keeps working in any other; resuming them in one org never
   touches another. The sidebar's organization switcher marks the orgs where you're suspended. The populated scenario
-  has a second organization, **Northwind Labs** (Owner: Leo Park), where Mia is also a user. People can be made userAdmin or user, suspended and removed, each
+  has a second organization, **Northwind Labs** (Owner: Leo Park), where Mia is also a user.
+- **Records belong to their organization.** A workspace, agent or message opened by ID resolves its own org: if you
+  belong to that org, Dispatch switches to it (so its suspended gate and your roles there apply); otherwise you get
+  *You don't have access to this …*. Permission checks and audit rows use the record's org, and the API console only
+  offers the current org's agents and workspaces. People can be made userAdmin or user, suspended and removed, each
   behind a preview that says what stays: agents they registered keep working (agents belong to the organization;
   *registered by* is audit only), admin rights they delegated stand, and their messages stay under their name.
   Creator fields (*registered by*, *added by*, *delegated by*) are permanent audit fields and never grant rights —

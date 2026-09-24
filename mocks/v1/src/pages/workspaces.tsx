@@ -4,7 +4,7 @@ import { ago, plural, until } from '../lib/format'
 import { actions, agentById, canAdmin, canPost, iAmActive, isExpired, MAX_ATTEMPTS, isOnline, myMembership, myWorkspaces, orgEvents, useDB, useNow, wsById } from '../lib/store'
 import type { Message } from '../lib/types'
 import { Composer, MessageCard, MessageDrawer, fireSummary, receiptCounts } from '../components/messages'
-import { AuditLog, ImpactDialog, ListBody, Tag } from '../components/shared'
+import { AuditLog, ImpactDialog, ListBody, NoAccess, Tag, useRecordOrg } from '../components/shared'
 import { Breadcrumb, Button, Callout, Card, Checkbox, Field, Footer, Input, Modal, PageTitle, Pill, Row, Select, Table, Tabs, Textarea, cx } from '../components/ui'
 import { TagInput, withDraftTag } from '../components/messages'
 
@@ -127,7 +127,9 @@ export function WorkspaceDetail() {
   const { wsId } = useParams()
   const w = wsById(d, wsId)
   const [deleting, setDeleting] = useState(false)
-  if (!w || !myWorkspaces(d).some((x) => x.id === w.id)) return <div className="text-sm text-zinc-400">You’re not a member of this workspace. <Link to="/workspaces">Back to workspaces</Link></div>
+  const access = useRecordOrg(w?.orgId)
+  if (access === 'switching') return null
+  if (!w || access === 'denied' || !myWorkspaces(d).some((x) => x.id === w.id)) return <NoAccess what="workspace" back={{ to: '/workspaces', label: 'Back to workspaces' }} />
   const base = `/workspaces/${w.id}`
   const agents = w.members.filter((m) => m.kind === 'agent')
   const online = agents.filter((m) => { const a = agentById(d, m.id); return a && isOnline(a) }).length

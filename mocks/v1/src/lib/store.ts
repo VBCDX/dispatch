@@ -72,8 +72,9 @@ export const ORG_ADMIN_ROLES: OrgRole[] = ['Owner', 'userAdmin']
 /** A person's status in one organization (null when they aren't in it). Suspension never crosses organizations. */
 export const statusIn = (h: Human | undefined, orgId: string): PersonStatus | null => (h?.roles[orgId] ? (h.orgStatus?.[orgId] ?? 'active') : null)
 export const isActive = (h: Human | undefined, orgId: string) => statusIn(h, orgId) === 'active'
-export const iAmActive = (d: DB) => isActive(me(d), d.currentOrgId)
-export const isOrgAdmin = (d: DB) => iAmActive(d) && ORG_ADMIN_ROLES.includes(myOrgRole(d) as OrgRole)
+/** Checks default to the current org; pass a record's own org to check against that org instead. */
+export const iAmActive = (d: DB, orgId = d.currentOrgId) => isActive(me(d), orgId)
+export const isOrgAdmin = (d: DB, orgId = d.currentOrgId) => iAmActive(d, orgId) && ORG_ADMIN_ROLES.includes(me(d)?.roles[orgId] as OrgRole)
 /** Active Owners and userAdmins of the current organization. */
 export const orgAdmins = (d: DB) => d.humans.filter((h) => isActive(h, d.currentOrgId) && ORG_ADMIN_ROLES.includes(h.roles[d.currentOrgId]))
 export const owners = (d: DB) => d.humans.filter((h) => h.roles[d.currentOrgId] === 'Owner')
@@ -112,8 +113,9 @@ export const myWorkspaces = (d: DB) => {
 }
 export const myMembership = (d: DB, w: Workspace) => w.members.find((m) => m.kind === 'human' && m.id === d.currentUserId)
 /** Admin of this workspace: its own admin role, or org Owner/userAdmin. */
-export const canAdmin = (d: DB, w: Workspace) => isOrgAdmin(d) || (iAmActive(d) && myMembership(d, w)?.role === 'admin')
-export const canPost = (d: DB, w: Workspace) => isOrgAdmin(d) || (iAmActive(d) && !!myMembership(d, w)?.write)
+// Workspace permissions are checked against the workspace's own organization, whichever org is on screen.
+export const canAdmin = (d: DB, w: Workspace) => isOrgAdmin(d, w.orgId) || (iAmActive(d, w.orgId) && myMembership(d, w)?.role === 'admin')
+export const canPost = (d: DB, w: Workspace) => isOrgAdmin(d, w.orgId) || (iAmActive(d, w.orgId) && !!myMembership(d, w)?.write)
 /** Active humans explicitly made admin of this workspace. A suspended admin doesn't count as the workspace's human admin. */
 export const explicitHumanAdmins = (d: DB, w: Workspace) => w.members.filter((m) => m.kind === 'human' && m.role === 'admin' && isActive(humanById(d, m.id), w.orgId))
 /**
@@ -143,10 +145,12 @@ export function receiptState(r: Message['receipts'][string] | undefined, m?: Mes
 /* Logging                                                             */
 /* ------------------------------------------------------------------ */
 export function log(d: DB, e: Partial<AuditEvent> & Pick<AuditEvent, 'object'>) {
+  // Audit rows belong to the record's organization: the workspace's when there is one, else the one given, else the current org.
+  const { orgId: given, ...rest } = e
+  const recordOrg = e.wsId ? (wsById(d, e.wsId)?.orgId ?? d.deletedWorkspaces.find((x) => x.id === e.wsId)?.orgId) : undefined
   const ev: AuditEvent = {
     id: uid('ev'),
     at: Date.now(),
-    orgId: d.currentOrgId,
     type: 'admin',
     severity: 'info',
     actor: me(d)?.name ?? 'Someone',
@@ -154,7 +158,8 @@ export function log(d: DB, e: Partial<AuditEvent> & Pick<AuditEvent, 'object'>) 
     actorId: d.currentUserId,
     result: 'Done',
     trk: trackingCode(),
-    ...e,
+    ...rest,
+    orgId: recordOrg ?? given ?? d.currentOrgId,
   }
   d.events.unshift(ev)
   return ev
@@ -697,7 +702,7 @@ export const actions = {
     let ok = false
     update((d) => {
       const a = agentById(d, id)
-      if (!a || a.status === 'revoked' || !(by?.kind === 'agent' ? by.id === id : isOrgAdmin(d))) return
+      if (!a || a.status === 'revoked' || !(by?.kind === 'agent' ? by.id === id : isOrgAdmin(d, a.orgId))) return
       const w = who(d, by)
       a.prevTokenLast4 = a.tokenLast4
       a.prevTokenUntil = Date.now() + TOKEN_GRACE
@@ -707,41 +712,41 @@ export const actions = {
       else sessionSecrets.delete(`agent-prev:${id}`)
       sessionSecrets.set(`agent:${id}`, token)
       ok = true
-      log(d, { ...w.ev, object: `Rotated agent token for ${a.label} → ••••${a.tokenLast4}`, result: `Old ••••${a.prevTokenLast4} works until ${clock(a.prevTokenUntil)}`, detail: [['Agent ID', a.id], ...w.detail] })
+      log(d, { orgId: a.orgId,  ...w.ev, object: `Rotated agent token for ${a.label} → ••••${a.tokenLast4}`, result: `Old ••••${a.prevTokenLast4} works until ${clock(a.prevTokenUntil)}`, detail: [['Agent ID', a.id], ...w.detail] })
     })
     return ok ? token : null
   },
   setAgentStatus(id: string, status: Agent['status']) {
     update((d) => {
       const a = agentById(d, id)
-      if (!a || !isOrgAdmin(d) || a.status === status) return
+      if (!a || !isOrgAdmin(d, a.orgId) || a.status === status) return
       const before = a.status
       a.status = status
       if (status !== 'active') a.connected = false
       const n = recheckReceipts(d, { agentId: id })
-      log(d, { object: `${status === 'active' ? 'Resumed' : status === 'suspended' ? 'Suspended' : 'Revoked'} agent ${a.label}`, result: `Done${recheckNote(n)}`, detail: [['Agent ID', a.id], ['Before', before], ['After', status]] })
+      log(d, { orgId: a.orgId,  object: `${status === 'active' ? 'Resumed' : status === 'suspended' ? 'Suspended' : 'Revoked'} agent ${a.label}`, result: `Done${recheckNote(n)}`, detail: [['Agent ID', a.id], ['Before', before], ['After', status]] })
     })
   },
   setAgentFilters(id: string, f: AgentFilters, by?: Actor) {
     update((d) => {
       const a = agentById(d, id)
-      if (!a || !(by?.kind === 'agent' ? by.id === id : isOrgAdmin(d))) return
+      if (!a || !(by?.kind === 'agent' ? by.id === id : isOrgAdmin(d, a.orgId))) return
       const show = (x: AgentFilters) =>
         `read ${x.read ? 'on' : 'off'} · write ${x.write ? 'on' : 'off'} · blocked workspaces: ${x.workspaceBlocklist.map((w) => wsById(d, w)?.name ?? w).join(', ') || 'none'} · blocked authors: ${x.agentBlocklist.map((g) => agentById(d, g)?.label ?? g).join(', ') || 'none'}`
       const before = show(a.filters)
       a.filters = f
       const n = recheckReceipts(d, { agentId: id })
       const w = who(d, by)
-      log(d, { ...w.ev, detail: [['Agent ID', a.id], ['Before', before], ['After', show(f)], ...w.detail], object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${recheckNote(n)}` })
+      log(d, { orgId: a.orgId,  ...w.ev, detail: [['Agent ID', a.id], ['Before', before], ['After', show(f)], ...w.detail], object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${recheckNote(n)}` })
     })
   },
   renameAgent(id: string, label: string) {
     update((d) => {
       const a = agentById(d, id)
-      if (!a || !label.trim() || labelTaken(d, label, id)) return
+      if (!a || !isOrgAdmin(d, a.orgId) || !label.trim() || d.agents.some((x) => x.orgId === a.orgId && x.id !== id && x.label.toLowerCase() === label.trim().toLowerCase())) return
       const old = a.label
       a.label = label.trim()
-      log(d, { object: `Renamed agent ${old} → ${a.label} · ${a.id}` })
+      log(d, { orgId: a.orgId,  object: `Renamed agent ${old} → ${a.label} · ${a.id}` })
     })
   },
   /** Prototype: the agent opens its MCP session / starts polling. Queued messages get delivered. */
@@ -762,7 +767,7 @@ export const actions = {
           n++
         }
       }
-      log(d, { type: 'access', severity: 'ok', actor: a.label, actorKind: 'agent', actorId: id, object: `Connected over ${a.harness === 'Other' ? 'REST' : 'MCP'}`, result: (n ? `${n} queued message${n === 1 ? '' : 's'} delivered` : 'Nothing queued') + recheckNote(filtered) })
+      log(d, { orgId: a.orgId,  type: 'access', severity: 'ok', actor: a.label, actorKind: 'agent', actorId: id, object: `Connected over ${a.harness === 'Other' ? 'REST' : 'MCP'}`, result: (n ? `${n} queued message${n === 1 ? '' : 's'} delivered` : 'Nothing queued') + recheckNote(filtered) })
     })
   },
 
@@ -991,8 +996,9 @@ export const actions = {
     update((d) => {
       const a = agentById(d, e.agentId)
       const h = humanById(d, e.viaHumanId)
+      // Console calls are audited in the org where they were made; a workspace ID from another org isn't attributed there.
       log(d, {
-        wsId: e.wsId,
+        wsId: e.wsId && wsById(d, e.wsId)?.orgId === d.currentOrgId ? e.wsId : undefined,
         type: e.allowed ? 'access' : 'blocked',
         severity: e.allowed ? (e.status >= 400 ? 'warn' : 'ok') : 'blocked',
         actor: a?.label ?? e.agentId,

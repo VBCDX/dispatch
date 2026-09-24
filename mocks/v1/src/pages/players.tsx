@@ -6,7 +6,7 @@ import { actions, agentById, canManageHuman, isActive, statusIn, emailTaken, exp
 import type { Agent, AgentFilters, Harness, Human, OrgRole, Workspace } from '../lib/types'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
-import { accessImpactRows, AgentGlyph, AuditLog, ImpactDialog, ListBody, PrincipalChip } from '../components/shared'
+import { accessImpactRows, AgentGlyph, AuditLog, ImpactDialog, ListBody, NoAccess, PrincipalChip, useRecordOrg } from '../components/shared'
 import { Breadcrumb, Button, Card, Field, Footer, Input, Menu, Modal, PageTitle, Pill, Row, Segmented, StatusInline, Table, Textarea, Toggle, cx } from '../components/ui'
 
 /* ------------------------------------------------------------------ */
@@ -148,9 +148,11 @@ export function AgentDetail() {
   const [suspending, setSuspending] = useState(false)
   const [rotating, setRotating] = useState(false)
   const [savingFilters, setSavingFilters] = useState(false)
+  const access = useRecordOrg(a?.orgId)
   const [f, setF] = useState<AgentFilters | null>(a?.filters ?? null)
   useEffect(() => setF(a?.filters ?? null), [a?.id]) // eslint-disable-line
-  if (!a || !f) return <div className="text-sm text-zinc-400">No such agent. <Link to="/agents">Back to agents</Link></div>
+  if (access === 'switching') return null
+  if (!a || !f || access === 'denied') return <NoAccess what="agent" back={{ to: '/agents', label: 'Back to agents' }} />
   const admin = isOrgAdmin(d)
   const memberships = d.workspaces.filter((w) => w.members.some((m) => m.kind === 'agent' && m.id === a.id))
   const allWs = d.workspaces.filter((w) => w.orgId === d.currentOrgId)

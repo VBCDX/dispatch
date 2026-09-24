@@ -509,7 +509,18 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
   const [rotating, setRotating] = useState(false)
   const [expiring, setExpiring] = useState(false)
   useEffect(() => setExpanded(null), [msgId])
-  if (!m) return null
+  if (!msgId) return null
+  // A message opened by ID (?m=) must belong to this workspace; anything else — another workspace or another org,
+  // or an ID that doesn't exist — gets the same no-access state, without revealing where it lives.
+  if (!m || m.wsId !== ws.id)
+    return (
+      <SlideOver open onClose={onClose} width={480} title={<span className="flex items-center gap-2.5">Message <span className="font-mono text-xs font-normal text-zinc-500">{msgId}</span></span>}>
+        <div role="alert" className="text-sm2 text-zinc-400">
+          <div className="text-[13px] font-semibold text-zinc-200">You don’t have access to this message here.</div>
+          <div className="mt-1">It isn’t a message in {ws.name}. Open messages from the workspace they belong to.</div>
+        </div>
+      </SlideOver>
+    )
   const thread = d.messages.filter((x) => x.parentId === m.id).sort((a, b) => a.createdAt - b.createdAt)
   const expired = isExpired(m, now)
   const c = receiptCounts(m, now)

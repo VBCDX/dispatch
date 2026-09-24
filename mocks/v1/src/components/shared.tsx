@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { clock, initials } from '../lib/format'
-import { accessImpact, ALREADY_DELIVERED, actorKey, actorLabel, humanById, useDB, wsLabel } from '../lib/store'
+import { accessImpact, ALREADY_DELIVERED, actions, actorKey, actorLabel, humanById, me, useDB, wsLabel } from '../lib/store'
 import type { DB } from '../lib/types'
 import type { AuditEvent, Author, Harness } from '../lib/types'
 import { CopyChip } from './credential'
@@ -28,6 +28,37 @@ export function ListBody({ cols, what, children, empty, rows = 3 }: { cols: stri
       </div>
     )
   return <>{empty ?? children}</>
+}
+
+/* ------------------------------------------------------------------ */
+/* Records loaded by ID belong to an organization.                     */
+/* ------------------------------------------------------------------ */
+/**
+ * Resolves a record's own organization. A viewer who belongs to it is moved
+ * into it, so that org's suspended gate and roles apply; anyone else gets a
+ * no-access state. Returns 'ok' once the record's org is the current one.
+ */
+export function useRecordOrg(orgId: string | undefined): 'ok' | 'switching' | 'denied' {
+  const d = useDB()
+  const member = !!orgId && !!me(d)?.roles[orgId]
+  const elsewhere = !!orgId && orgId !== d.currentOrgId
+  useEffect(() => {
+    if (elsewhere && member) actions.switchOrg(orgId!)
+  }, [elsewhere, member, orgId])
+  if (!elsewhere) return 'ok'
+  return member ? 'switching' : 'denied'
+}
+
+export function NoAccess({ what, back }: { what: string; back: { to: string; label: string } }) {
+  return (
+    <div role="alert" className="max-w-[560px] rounded-[10px] border border-edge bg-panel p-6 text-sm2 text-zinc-400">
+      <div className="text-[13px] font-semibold text-zinc-200">You don’t have access to this {what}.</div>
+      <div className="mt-1">It belongs to an organization or workspace you’re not part of. Nothing about it is shown.</div>
+      <Link to={back.to} className="mt-3 inline-block">
+        {back.label} →
+      </Link>
+    </div>
+  )
 }
 
 /* ------------------------------------------------------------------ */

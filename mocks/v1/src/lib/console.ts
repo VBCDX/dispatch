@@ -127,8 +127,8 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
   const sender = humanById(d0, humanId)
   if (!isActive(sender, d0.currentOrgId)) return { status: 403, body: { error: 'console_user_inactive', message: 'Your account isn’t active, so the console won’t send requests for you.' } }
 
-  // Rule 1: agent ID + agent token, and an active agent.
-  if (!a) return refuse(fail(401, 'unauthorized', 'Unknown agent ID.', { rule: 'Agent ID + agent token' }))
+  // Rule 1: agent ID + agent token, and an active agent. The console only acts inside the org on screen.
+  if (!a || a.orgId !== d0.currentOrgId) return refuse(fail(401, 'unauthorized', 'Unknown agent ID.', { rule: 'Agent ID + agent token' }))
   const tokErr = tokenProblem(req.agentToken, sessionSecret(`agent:${a.id}`), sessionSecret(`agent-prev:${a.id}`), a.prevTokenUntil, a.tokenLast4, 'agent token')
   if (tokErr) return refuse(fail(401, 'unauthorized', tokErr, { rule: 'Agent ID + agent token' }))
   if (a.status !== 'active') return refuse(fail(401, 'agent_inactive', `${a.label} is ${a.status}.`, { rule: 'Agent ID + agent token' }))
@@ -186,7 +186,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
 
   /* ---------------- Workspace flows: the ladder, with the membership token at rule 4 ---------------- */
   const w = wsById(getDB(), wsId)
-  if (!w) return refuse(fail(403, 'forbidden', 'Unknown workspace ID.', { rule: 'Workspace ID + membership token' }))
+  if (!w || w.orgId !== a.orgId) return refuse(fail(403, 'forbidden', 'Unknown workspace ID.', { rule: 'Workspace ID + membership token' }))
   const op = ep.op ?? 'read'
   const res = evaluate(getDB(), a.id, wsId, op)
   for (let i = 1; i < res.steps.length; i++) {
