@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { clock, initials } from '../lib/format'
-import { actorKey, actorLabel, humanById, useDB, wsLabel } from '../lib/store'
+import { accessImpact, actorKey, actorLabel, humanById, useDB, wsLabel } from '../lib/store'
+import type { DB } from '../lib/types'
 import type { AuditEvent, Author, Harness } from '../lib/types'
 import { CopyChip } from './credential'
 import { Avatar, Button, ErrorBox, Field, Footer, Input, Modal, SkeletonRows, cx, useFakeLoad } from './ui'
@@ -71,6 +72,25 @@ export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, o
       </Footer>
     </Modal>
   )
+}
+
+/**
+ * Impact-preview rows for taking an agent's access away. `final` for a block,
+ * removal or revocation (queued messages are filtered, waiting webhooks won't
+ * fire); otherwise a reversible hold (suspension, read turned off).
+ */
+export function accessImpactRows(d: DB, agentId: string, wsId: string | undefined, final: boolean): [string, ReactNode, ('amber' | 'red')?][] {
+  const i = accessImpact(d, agentId, wsId)
+  const kept = i.delivered + i.read
+  return [
+    ['Queued for it, never delivered', i.queued ? `${i.queued} — ${final ? 'filtered now, never delivered' : 'held; delivered if access returns'}` : 'None', i.queued ? 'amber' : undefined],
+    ['Delivered, not acknowledged', kept ? `${i.delivered} delivered · ${i.read} read — kept as recorded, marked “access removed”` : 'None'],
+    [
+      'Fire webhooks waiting on it',
+      i.hooks.length ? `${final ? 'Won’t fire' : 'Stay pending while it’s held'}: ${i.hooks.map((h) => `${h.id} (${h.url})`).join(', ')}` : 'None',
+      i.hooks.length ? (final ? 'red' : 'amber') : undefined,
+    ],
+  ]
 }
 
 /* ------------------------------------------------------------------ */
@@ -225,7 +245,8 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [seen] = useState(() => new Set(events.map((e) => e.id)))
   const { state, retry } = useListState()
-  const actors = Array.from(new Map(events.map((e) => [actorKey(e), `${actorLabel(d, e)}${e.actorKind === 'human' || e.actorKind === 'system' ? '' : ` · ${e.actorKind}`}`])).entries()).sort((a, b) => a[1].localeCompare(b[1]))
+  // Listener rows are keyed by listener ID (callers' IPs vary), so one listener is one actor.
+  const actors = Array.from(new Map(events.map((e) => [actorKey(e), e.actorKind === 'webhook' && e.actorId ? `listener ${e.actorId} · webhook` : `${actorLabel(d, e)}${e.actorKind === 'human' || e.actorKind === 'system' ? '' : ` · ${e.actorKind}`}`])).entries()).sort((a, b) => a[1].localeCompare(b[1]))
   const wsOptions = Array.from(new Set(events.map((e) => e.wsId).filter((x): x is string => !!x))).map((id) => [id, wsLabel(d, id)!] as const).sort((a, b) => a[1].localeCompare(b[1]))
   const filtered = events.filter((e) => {
     if (q) {

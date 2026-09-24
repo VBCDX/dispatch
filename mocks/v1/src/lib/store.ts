@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { evaluate, filteredReason, targets } from './access'
+import { accessVerdict, evaluate, targets } from './access'
 import { HOUR, MIN, clock, newAgentToken, newHookPassword, newWsToken, shortId, trackingCode, uid } from './format'
 import { freshDB, populatedDB } from './seed'
 import type { Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, Harness, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
@@ -108,12 +108,13 @@ export const canPost = (d: DB, w: Workspace) => isOrgAdmin(d) || !!myMembership(
 export const isOnline = (a: Agent) => a.status === 'active' && a.connected
 
 export const isExpired = (m: Message, now = Date.now()) => m.expiresAt != null && m.expiresAt <= now
-export type ReceiptState = 'queued' | 'delivered' | 'read' | 'acked' | 'filtered' | 'expired'
+export type ReceiptState = 'queued' | 'held' | 'delivered' | 'read' | 'acked' | 'filtered' | 'expired'
 /** A receipt's state. Pass the message: one that expired before delivery reads "never delivered", not "queued". */
 export function receiptState(r: Message['receipts'][string] | undefined, m?: Message, now = Date.now()): ReceiptState {
   if (r?.filtered) return 'filtered'
   if (m && isExpired(m, now) && !r?.deliveredAt) return 'expired'
   if (!r) return 'queued'
+  if (r.held) return 'held'
   if (r.ackAt) return 'acked'
   if (r.readAt) return 'read'
   if (r.deliveredAt) return 'delivered'
@@ -141,27 +142,32 @@ export function log(d: DB, e: Partial<AuditEvent> & Pick<AuditEvent, 'object'>) 
   return ev
 }
 
-/** Recompute who a message is for and mark filtered recipients. */
+/** Work out who a message is for: filtered (a final refusal), held (a reversible one), or deliverable. */
 function initReceipts(d: DB, w: Workspace, msg: Message) {
   for (const id of targets(w, msg)) {
     const a = agentById(d, id)
     if (!a) continue
-    const why = filteredReason(d, w, msg, a)
-    msg.receipts[id] = why ? { filtered: why } : {}
-    if (!why && isOnline(a)) msg.receipts[id].deliveredAt = Date.now()
+    const v = accessVerdict(d, w, msg, a)
+    msg.receipts[id] = !v ? {} : v.final ? { filtered: v.reason, filteredCause: v.cause } : { held: v.reason, heldCause: v.cause, heldAt: Date.now() }
+    if (!v && isOnline(a)) msg.receipts[id].deliveredAt = Date.now()
   }
 }
 
+/** What a re-check changed. */
+export type Recheck = { filtered: number; held: number; released: number; removed: number; restored: number }
+const noChange = (): Recheck => ({ filtered: 0, held: 0, released: 0, removed: 0, restored: 0 })
+
 /**
- * Re-runs the access ladder for receipts that are still pending (not yet
- * acknowledged) on live messages. Access can change after a message was
- * sent — a block, a removal, a revoke, a filter — and a pending receipt
- * follows the rule that applies now: it becomes Filtered, naming the rule.
- * Filtered is final for that message; lifting the block affects later
- * messages. Returns how many receipts were filtered.
+ * Re-runs the access ladder for receipts on live messages. Access can change
+ * after a message was sent, and refusals only act on what hasn't happened yet:
+ * - never delivered + final refusal (block, removal, revoke) → Filtered;
+ * - never delivered + reversible refusal (suspended, read off) → Held, then
+ *   released when access returns (and delivered on the next delivery);
+ * - already delivered, read or acknowledged → kept exactly as recorded, with
+ *   an "access removed" note while access is refused.
  */
-export function recheckReceipts(d: DB, scope: { wsId?: string; agentId?: string } = {}): number {
-  let n = 0
+export function recheckReceipts(d: DB, scope: { wsId?: string; agentId?: string } = {}): Recheck {
+  const c = noChange()
   const now = Date.now()
   for (const m of d.messages) {
     if ((scope.wsId && m.wsId !== scope.wsId) || isExpired(m, now)) continue
@@ -169,20 +175,77 @@ export function recheckReceipts(d: DB, scope: { wsId?: string; agentId?: string 
     if (!w) continue
     let touched = false
     for (const [aid, r] of Object.entries(m.receipts)) {
-      if ((scope.agentId && aid !== scope.agentId) || r.filtered || r.ackAt) continue
+      if ((scope.agentId && aid !== scope.agentId) || r.filtered) continue
       const a = agentById(d, aid)
-      const why = a ? filteredReason(d, w, m, a) : 'The agent no longer exists.'
-      if (!why) continue
-      r.filtered = why
-      r.filteredAt = now
+      const v = a ? accessVerdict(d, w, m, a) : { reason: 'The agent no longer exists.', final: true, cause: 'deleted' }
+      if (!r.deliveredAt) {
+        if (v?.final) {
+          r.filtered = v.reason
+          r.filteredAt = now
+          r.filteredCause = v.cause
+          delete r.held
+          delete r.heldCause
+          delete r.heldAt
+          c.filtered++
+        } else if (v) {
+          if (r.held === v.reason) continue
+          r.held = v.reason
+          r.heldCause = v.cause
+          r.heldAt ??= now
+          c.held++
+        } else if (r.held) {
+          delete r.held
+          delete r.heldCause
+          delete r.heldAt
+          c.released++
+        } else continue
+      } else if (v) {
+        if (r.removed?.reason === v.reason) continue
+        r.removed = { at: r.removed?.at ?? now, reason: v.reason, final: v.final, cause: v.cause }
+        c.removed++
+      } else if (r.removed) {
+        delete r.removed
+        c.restored++
+      } else continue
       touched = true
-      n++
     }
     if (touched) maybeFire(d, m)
   }
-  return n
+  return c
 }
-const filteredNote = (n: number) => (n ? ` · ${n} pending receipt${n === 1 ? '' : 's'} filtered` : '')
+/**
+ * What losing access would do to one agent's receipts (in one workspace, or
+ * everywhere): queued ones are filtered (final) or held (reversible); delivered
+ * and read ones keep what they recorded; fire webhooks still waiting on it
+ * won't fire (final) or stay pending (reversible).
+ */
+export function accessImpact(d: DB, agentId: string, wsId?: string) {
+  const now = Date.now()
+  const msgs = d.messages.filter((m) => (!wsId || m.wsId === wsId) && !isExpired(m, now) && m.receipts[agentId] && !m.receipts[agentId].filtered)
+  const r = (m: Message) => m.receipts[agentId]
+  const hooks = msgs.filter((m) => m.webhook?.mode === 'fire' && !m.webhook.firedAt && !m.webhook.outcome && m.webhook.trigger !== 'send' && !(m.webhook.trigger === 'all-read' ? r(m).readAt : r(m).ackAt))
+  return {
+    queued: msgs.filter((m) => !r(m).deliveredAt).length,
+    delivered: msgs.filter((m) => r(m).deliveredAt && !r(m).readAt && !r(m).ackAt).length,
+    read: msgs.filter((m) => r(m).readAt && !r(m).ackAt).length,
+    hooks: hooks.map((m) => ({ id: m.id, url: m.webhook!.url.replace(/^https?:\/\//, '') })),
+  }
+}
+
+/** " · 2 queued filtered · 1 held · 3 delivered kept (access removed)" for audit results. */
+export function recheckNote(c: Recheck) {
+  const parts = [
+    c.filtered && `${c.filtered} queued filtered`,
+    c.held && `${c.held} held`,
+    c.removed && `${c.removed} delivered kept (access removed)`,
+    c.released && `${c.released} released`,
+    c.restored && `${c.restored} regained access`,
+  ].filter(Boolean)
+  return parts.length ? ` · ${parts.join(' · ')}` : ''
+}
+const anyChange = (c: Recheck) => c.filtered + c.held + c.released + c.removed + c.restored > 0
+/** A receipt that can move forward right now (not filtered, held, or cut off after delivery). */
+const deliverable = (r: Message['receipts'][string]) => !r.filtered && !r.held && !r.removed
 
 /* Outbound webhooks: one call when the trigger is met, then up to 3 retries. */
 export const RETRY_DELAYS = [30_000, 2 * MIN, 10 * MIN]
@@ -191,12 +254,15 @@ const TRIGGER_TEXT: Record<FireTrigger, string> = { send: 'On send', 'all-read':
 type FireHook = Extract<Webhook, { mode: 'fire' }>
 
 /**
- * Where a fire webhook stands, for the UI. Filtered targets (blocked,
- * removed, revoked, suspended, filtered by the agent) drop out of "every
- * target"; if nobody is left, the hook can never fire and says so.
+ * Where a fire webhook stands, for the UI. A refusal never counts as
+ * completion: if a target that hasn't met the trigger can no longer receive
+ * the message (blocked, removed, revoked), the hook won't fire and names it.
+ * Held targets (suspended, read off) keep it pending. Agents already
+ * filtered when the message was sent were never targets.
  */
 export type FireState =
-  | { k: 'waiting'; pending: string[]; total: number }
+  | { k: 'waiting'; pending: string[]; held: string[]; total: number }
+  | { k: 'target-lost'; dropped: { agentId: string; cause: string }[] }
   | { k: 'retrying'; next: number; attempt: number }
   | { k: 'delivered'; at: number; attempt: number }
   | { k: 'gave-up'; attempts: number }
@@ -209,18 +275,45 @@ export function fireState(m: Message, now = Date.now()): FireState | null {
   if (h.outcome === 'delivered' || okAt >= 0) return { k: 'delivered', at: h.attempts[okAt]?.at ?? h.outcomeAt ?? now, attempt: okAt + 1 }
   if (h.outcome === 'gave-up') return { k: 'gave-up', attempts: h.attempts.length }
   if (h.outcome === 'no-targets') return { k: 'no-targets' }
+  if (h.outcome === 'target-lost') return { k: 'target-lost', dropped: h.dropped ?? [] }
   if (h.outcome === 'expired' || isExpired(m, now)) return { k: 'expired', attempts: h.attempts.length }
   if (h.firedAt) return { k: 'retrying', next: h.nextAttemptAt ?? now, attempt: h.attempts.length + 1 }
-  const live = Object.entries(m.receipts).filter(([, r]) => !r.filtered)
-  if (h.trigger !== 'send' && !live.length) return { k: 'no-targets' }
-  const pending = live.filter(([, r]) => !(h.trigger === 'all-read' ? r.readAt : r.ackAt)).map(([id]) => id)
-  return { k: 'waiting', pending, total: live.length }
+  const t = hookTargets(m, h)
+  if (h.trigger !== 'send' && !t.live.length) return { k: 'no-targets' }
+  if (t.lost.length) return { k: 'target-lost', dropped: t.lost.map(([id, r]) => ({ agentId: id, cause: r.filteredCause ?? r.removed?.cause ?? 'refused' })) }
+  return { k: 'waiting', pending: t.pending.map(([id]) => id), held: t.pending.filter(([, r]) => r.held || r.removed).map(([id]) => id), total: t.live.length }
 }
 
-function settleHook(d: DB, msg: Message, hook: FireHook, outcome: 'no-targets' | 'expired') {
+/** A fire hook's targets: live ones, the ones still pending, and the ones lost to a final refusal before meeting the trigger. */
+function hookTargets(m: Message, h: FireHook) {
+  // Filtered when the message was sent (no filteredAt): never a target.
+  const live = Object.entries(m.receipts).filter(([, r]) => !r.filtered || r.filteredAt)
+  const done = (r: Message['receipts'][string]) => (h.trigger === 'all-read' ? r.readAt : r.ackAt)
+  const open = live.filter(([, r]) => !done(r))
+  const lost = open.filter(([, r]) => r.filtered || r.removed?.final)
+  return { live, pending: open.filter((x) => !lost.includes(x)), lost }
+}
+
+function settleHook(d: DB, msg: Message, hook: FireHook, outcome: 'no-targets' | 'expired' | 'target-lost') {
   hook.outcome = outcome
   hook.outcomeAt = Date.now()
   hook.nextAttemptAt = undefined
+  if (outcome === 'target-lost') {
+    const names = (hook.dropped ?? []).map((x) => `${agentById(d, x.agentId)?.label ?? x.agentId} (${x.cause})`).join(', ')
+    log(d, {
+      wsId: msg.wsId,
+      type: 'webhook',
+      severity: 'warn',
+      actor: 'Dispatch',
+      actorKind: 'system',
+      object: `Won’t fire ${hook.url.replace(/^https?:\/\//, '')} · ${msg.id}`,
+      result: `Target can no longer receive it · ${names}`,
+      reason: `A refusal never counts as completion: ${names} can no longer ${hook.trigger === 'all-read' ? 'read' : 'acknowledge'} this message, so “${TRIGGER_TEXT[hook.trigger].toLowerCase()}” can’t be met.`,
+      detail: [['Trigger', TRIGGER_TEXT[hook.trigger]], ...(hook.dropped ?? []).map((x) => [`Dropped ${x.agentId}`, x.reason] as [string, string])],
+      link: { label: 'Open the message', to: `/workspaces/${msg.wsId}/messages?m=${msg.id}` },
+    })
+    return
+  }
   log(d, {
     wsId: msg.wsId,
     type: 'webhook',
@@ -286,10 +379,15 @@ export function maybeFire(d: DB, msg: Message) {
   const hook = msg.webhook
   if (!hook || hook.mode !== 'fire' || hook.firedAt || hook.outcome) return
   if (isExpired(msg)) return settleHook(d, msg, hook, 'expired')
-  const live = Object.values(msg.receipts).filter((r) => !r.filtered)
-  if (hook.trigger !== 'send' && !live.length) return settleHook(d, msg, hook, 'no-targets')
-  const ok = hook.trigger === 'send' || live.every((r) => (hook.trigger === 'all-read' ? r.readAt : r.ackAt))
-  if (!ok) return
+  if (hook.trigger !== 'send') {
+    const t = hookTargets(msg, hook)
+    if (!t.live.length) return settleHook(d, msg, hook, 'no-targets')
+    if (t.lost.length) {
+      hook.dropped = t.lost.map(([id, r]) => ({ agentId: id, cause: r.filteredCause ?? r.removed?.cause ?? 'refused', reason: r.filtered ?? r.removed?.reason ?? '', at: r.filteredAt ?? r.removed?.at ?? Date.now() }))
+      return settleHook(d, msg, hook, 'target-lost')
+    }
+    if (t.pending.length) return
+  }
   hook.firedAt = Date.now()
   attemptWebhook(d, msg, hook)
 }
@@ -455,8 +553,8 @@ export const actions = {
         m.delegatedBy = undefined
         log(d, { ...a.ev, wsId, object: `Removed admin on ${w.name} from ${principalName(d, p)}${a.asAdmin}` })
       } else {
-        const n = p.kind === 'agent' ? recheckReceipts(d, { wsId, agentId: p.id }) : 0
-        log(d, { ...a.ev, wsId, object: `Changed ${principalName(d, p)}'s access in ${w.name} → ${m.read ? 'read' : ''}${m.read && m.write ? ' + ' : ''}${m.write ? 'write' : ''}${!m.read && !m.write ? 'none' : ''}${a.asAdmin}`, result: `Done${filteredNote(n)}` })
+        const n = p.kind === 'agent' ? recheckReceipts(d, { wsId, agentId: p.id }) : noChange()
+        log(d, { ...a.ev, wsId, object: `Changed ${principalName(d, p)}'s access in ${w.name} → ${m.read ? 'read' : ''}${m.read && m.write ? ' + ' : ''}${m.write ? 'write' : ''}${!m.read && !m.write ? 'none' : ''}${a.asAdmin}`, result: `Done${recheckNote(n)}` })
       }
       flagNoHumanAdmin(d, w, hadHuman, by)
     })
@@ -491,8 +589,8 @@ export const actions = {
       const a = who(d, by)
       const hadHuman = hasHumanAdmin(w)
       w.members = w.members.filter((x) => x !== m)
-      const n = p.kind === 'agent' ? recheckReceipts(d, { wsId, agentId: p.id }) : 0
-      log(d, { ...a.ev, wsId, object: `Removed ${principalName(d, p)} from ${w.name}${p.kind === 'agent' ? ' — its workspace token stops working now' : ''}${a.asAdmin}`, result: `Done${filteredNote(n)}` })
+      const n = p.kind === 'agent' ? recheckReceipts(d, { wsId, agentId: p.id }) : noChange()
+      log(d, { ...a.ev, wsId, object: `Removed ${principalName(d, p)} from ${w.name}${p.kind === 'agent' ? ' — its workspace token stops working now' : ''}${a.asAdmin}`, result: `Done${recheckNote(n)}` })
       flagNoHumanAdmin(d, w, hadHuman, by)
     })
   },
@@ -504,7 +602,7 @@ export const actions = {
       const added = ids.filter((x) => !w.agentBlocklist.includes(x))
       const removed = w.agentBlocklist.filter((x) => !ids.includes(x))
       w.agentBlocklist = ids
-      for (const id of added) log(d, { ...a.ev, wsId, object: `Added ${agentById(d, id)?.label ?? id} to ${w.name} blocklist${a.asAdmin}`, result: `Done${filteredNote(recheckReceipts(d, { wsId, agentId: id }))}` })
+      for (const id of added) log(d, { ...a.ev, wsId, object: `Added ${agentById(d, id)?.label ?? id} to ${w.name} blocklist${a.asAdmin}`, result: `Done${recheckNote(recheckReceipts(d, { wsId, agentId: id }))}` })
       for (const id of removed) log(d, { ...a.ev, wsId, object: `Removed ${agentById(d, id)?.label ?? id} from ${w.name} blocklist${a.asAdmin}` })
     })
   },
@@ -547,8 +645,8 @@ export const actions = {
       if (!a) return
       a.status = status
       if (status !== 'active') a.connected = false
-      const n = status === 'active' ? 0 : recheckReceipts(d, { agentId: id })
-      log(d, { object: `${status === 'active' ? 'Resumed' : status === 'suspended' ? 'Suspended' : 'Revoked'} agent ${a.label}`, result: `Done${filteredNote(n)}` })
+      const n = recheckReceipts(d, { agentId: id })
+      log(d, { object: `${status === 'active' ? 'Resumed' : status === 'suspended' ? 'Suspended' : 'Revoked'} agent ${a.label}`, result: `Done${recheckNote(n)}` })
     })
   },
   setAgentFilters(id: string, f: AgentFilters, by?: Actor) {
@@ -557,7 +655,7 @@ export const actions = {
       if (!a || !(by?.kind === 'agent' ? by.id === id : isOrgAdmin(d))) return
       a.filters = f
       const n = recheckReceipts(d, { agentId: id })
-      log(d, { ...who(d, by).ev, object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${filteredNote(n)}` })
+      log(d, { ...who(d, by).ev, object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${recheckNote(n)}` })
     })
   },
   renameAgent(id: string, label: string) {
@@ -582,12 +680,12 @@ export const actions = {
       let n = 0
       for (const m of d.messages) {
         const r = m.receipts[id]
-        if (r && !r.filtered && !r.deliveredAt && !isExpired(m)) {
+        if (r && deliverable(r) && !r.deliveredAt && !isExpired(m)) {
           r.deliveredAt = Date.now()
           n++
         }
       }
-      log(d, { type: 'access', severity: 'ok', actor: a.label, actorKind: 'agent', actorId: id, object: `Connected over ${a.harness === 'Other' ? 'REST' : 'MCP'}`, result: (n ? `${n} queued message${n === 1 ? '' : 's'} delivered` : 'Nothing queued') + filteredNote(filtered) })
+      log(d, { type: 'access', severity: 'ok', actor: a.label, actorKind: 'agent', actorId: id, object: `Connected over ${a.harness === 'Other' ? 'REST' : 'MCP'}`, result: (n ? `${n} queued message${n === 1 ? '' : 's'} delivered` : 'Nothing queued') + recheckNote(filtered) })
     })
   },
 
@@ -624,13 +722,14 @@ export const actions = {
       const rs = Object.values(msg.receipts)
       const queued = rs.filter((r) => !r.filtered).length
       const filtered = rs.length - queued
+      const held = rs.filter((r) => r.held).length
       log(d, {
         wsId: w.id,
         type: 'message',
         severity: 'ok',
         ...who(d, as).ev,
         object: `Posted to ${w.name}${m.tags.length ? ' · ' + m.tags.map((t) => '#' + t).join(' ') : ''}`,
-        result: `For ${queued} agent${queued === 1 ? '' : 's'}${filtered ? ` · ${filtered} filtered` : ''}`,
+        result: `For ${queued} agent${queued === 1 ? '' : 's'}${held ? ` · ${held} held` : ''}${filtered ? ` · ${filtered} filtered` : ''}`,
         trk: msg.trk,
         link: { label: 'Open the message', to: `/workspaces/${w.id}/messages?m=${id}` },
       })
@@ -717,14 +816,11 @@ export const actions = {
       const a = agentById(d, agentId)
       if (!m || !r || r.filtered || !a) return
       const w = wsById(d, m.wsId)
-      const why = w ? filteredReason(d, w, m, a) : 'The workspace no longer exists.'
-      if (why) {
-        if (!r.ackAt) {
-          r.filtered = why
-          r.filteredAt = Date.now()
-        }
-        log(d, { wsId: m.wsId, type: 'blocked', severity: 'blocked', actor: a.label, actorKind: 'agent', actorId: a.id, object: `${kind === 'ack' ? 'Acknowledge' : 'Read'} ${m.id}`, result: 'Refused · receipt filtered', reason: `Blocked: ${why}` })
-        maybeFire(d, m)
+      const v = w ? accessVerdict(d, w, m, a) : { reason: 'The workspace no longer exists.', final: true, cause: 'deleted' }
+      if (v) {
+        // Re-checked at the moment of the action; what it already recorded stays as it is.
+        const c = recheckReceipts(d, { wsId: m.wsId, agentId })
+        log(d, { wsId: m.wsId, type: 'blocked', severity: 'blocked', actor: a.label, actorKind: 'agent', actorId: a.id, object: `${kind === 'ack' ? 'Acknowledge' : 'Read'} ${m.id}`, result: `Refused${recheckNote(c)}`, reason: `Blocked: ${v.reason}` })
         return
       }
       const now = Date.now()
@@ -763,10 +859,11 @@ export const actions = {
       const a = agentById(d, agentId)
       if (!a || a.status !== 'active') return
       a.lastSeen = Date.now()
-      filtered = recheckReceipts(d, { wsId, agentId })
+      const c = recheckReceipts(d, { wsId, agentId })
+      filtered = c.filtered
       for (const m of d.messages) {
         const r = m.receipts[agentId]
-        if (m.wsId !== wsId || !r || r.filtered || r.deliveredAt || isExpired(m)) continue
+        if (m.wsId !== wsId || !r || !deliverable(r) || r.deliveredAt || isExpired(m)) continue
         r.deliveredAt = Date.now()
         delivered++
       }
@@ -833,15 +930,18 @@ export function liveTick() {
   update((d) => {
     const now = Date.now()
     for (const a of d.agents) if (isOnline(a)) a.lastSeen = now
-    // Access is re-checked before any receipt moves.
-    recheckReceipts(d)
+    // Access is re-checked before any receipt moves, and whatever the re-check changes is logged.
+    for (const w of d.workspaces) {
+      const c = recheckReceipts(d, { wsId: w.id })
+      if (anyChange(c)) log(d, { wsId: w.id, type: 'access', severity: c.filtered ? 'warn' : 'info', actor: 'Dispatch', actorKind: 'system', object: `Re-checked access at delivery in ${w.name}`, result: recheckNote(c).slice(3), reason: 'Access changed since these messages were sent. Queued receipts are held or filtered; delivered ones keep what they recorded.' })
+    }
     webhookTick(d, now)
     // Progress receipts for online agents, one step at a time.
     for (const m of d.messages) {
       if (isExpired(m, now)) continue
       for (const [aid, r] of Object.entries(m.receipts)) {
         const a = agentById(d, aid)
-        if (!a || !isOnline(a) || r.filtered || Math.random() < 0.55) continue
+        if (!a || !isOnline(a) || !deliverable(r) || Math.random() < 0.55) continue
         if (!r.deliveredAt) r.deliveredAt = now
         else if (!r.readAt && now - r.deliveredAt > 3000) {
           r.readAt = now

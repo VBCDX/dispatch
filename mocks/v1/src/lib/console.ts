@@ -54,7 +54,7 @@ export function messageJson(d: DB, m: Message, forAgent?: string) {
     receipts: Object.fromEntries(
       Object.entries(m.receipts).map(([id, r]) => {
         const s = receiptState(r, m)
-        return [id, { state: s === 'expired' ? 'never_delivered' : s, delivered_at: iso(r.deliveredAt), read_at: iso(r.readAt), ack_at: iso(r.ackAt), ...(r.filtered ? { rule: r.filtered } : {}) }]
+        return [id, { state: s === 'expired' ? 'never_delivered' : s, delivered_at: iso(r.deliveredAt), read_at: iso(r.readAt), ack_at: iso(r.ackAt), ...(r.filtered ? { rule: r.filtered } : r.held ? { rule: r.held } : {}), ...(r.removed ? { access_removed_at: iso(r.removed.at), access_removed_reason: r.removed.reason } : {}) }]
       }),
     ),
     ...(w ? { webhook: w.mode === 'fire' ? { mode: 'fire', url: w.url, trigger: w.trigger, state: fireState(m)?.k, attempts: w.attempts.length } : { mode: 'listen', url: w.url, user: w.authUser, open: !isExpired(m), calls: w.calls.length } } : {}),
@@ -202,6 +202,14 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
     const m = d.messages.find((x) => x.id === msgParam && x.wsId === wsId)
     return m && visibleToAgent(m, a.id) ? m : null
   }
+  // Admin actions on a message (expire, retry, listener password): an agent admin can act on any message in its
+  // workspace, like a human admin. Non-admins still only reach what's addressed to them — anything else is 404.
+  const adminAgent = evaluate(d, a.id, wsId, 'admin').allowed
+  const actionableMsg = () => {
+    const m = d.messages.find((x) => x.id === msgParam && x.wsId === wsId)
+    return m && (adminAgent || visibleToAgent(m, a.id)) ? m : null
+  }
+
   const notFound = () => refuse(fail(404, 'not_found', `No message ${msgParam} for ${a.label} in ${w.name}.`))
 
   switch (ep.id) {
@@ -254,7 +262,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       return m ? ok(200, messageJson(d, m, a.id)) : notFound()
     }
     case 'expire': {
-      const m = visibleMsg()
+      const m = actionableMsg()
       if (!m) return notFound()
       if (isExpired(m)) return refuse(fail(409, 'already_expired', `${m.id} already expired.`))
       if (!mayExpire(d, m, by)) return refuse(fail(403, 'forbidden', 'Only the message’s author (with write) or a workspace admin can expire it.', { rule: 'Author or workspace admin' }))
@@ -272,7 +280,8 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       actions.agentReceipt(m.id, a.id, ep.id)
       const after = getDB().messages.find((x) => x.id === m.id)!
       const r2 = after.receipts[a.id]
-      if (r2.filtered) return refuse(fail(403, 'forbidden', r2.filtered, { rule: 'Re-checked at delivery' }))
+      const refusal = r2.filtered ?? r2.held ?? r2.removed?.reason
+      if (refusal || (ep.id === 'ack' ? !r2.ackAt : !r2.readAt)) return refuse(fail(403, 'forbidden', refusal ?? 'Refused.', { rule: 'Re-checked at the moment of the action' }))
       return ok(200, { message_id: m.id, state: ep.id === 'ack' ? 'acked' : 'read', webhook: after.webhook?.mode === 'fire' ? fireState(after)?.k : undefined })
     }
     case 'receipts': {
@@ -280,10 +289,10 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       if (!m) return notFound()
       const e = Object.entries(m.receipts)
       const pick = (f: (r: Message['receipts'][string]) => unknown) => e.filter(([, r]) => !r.filtered && f(r)).map(([id]) => id)
-      return ok(200, { delivered: pick((r) => r.deliveredAt), read: pick((r) => r.readAt), acknowledged: pick((r) => r.ackAt), never_delivered: isExpired(m) ? pick((r) => !r.deliveredAt) : [], filtered: e.filter(([, r]) => r.filtered).map(([id, r]) => ({ agent_id: id, rule: r.filtered })) })
+      return ok(200, { held: e.filter(([, r]) => r.held).map(([id, r]) => ({ agent_id: id, rule: r.held })), delivered: pick((r) => r.deliveredAt), read: pick((r) => r.readAt), acknowledged: pick((r) => r.ackAt), never_delivered: isExpired(m) ? pick((r) => !r.deliveredAt) : [], filtered: e.filter(([, r]) => r.filtered).map(([id, r]) => ({ agent_id: id, rule: r.filtered })) })
     }
     case 'retry': {
-      const m = visibleMsg()
+      const m = actionableMsg()
       if (!m) return notFound()
       const s = fireState(m)
       if (!s) return refuse(fail(409, 'no_fire_webhook', `${m.id} has no fire webhook.`))
@@ -294,7 +303,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       return ok(200, { attempt: h?.mode === 'fire' ? h.attempts.length : 0, status: last?.status, ms: last?.ms, tracking_code: last?.trk, state: fireState(getDB().messages.find((x) => x.id === m.id)!)?.k })
     }
     case 'listener-password': {
-      const m = visibleMsg()
+      const m = actionableMsg()
       if (!m) return notFound()
       if (m.webhook?.mode !== 'listen') return refuse(fail(409, 'no_listener', `${m.id} has no listener.`))
       if (isExpired(m)) return refuse(fail(409, 'expired', `${m.id} expired; its listener is closed.`))

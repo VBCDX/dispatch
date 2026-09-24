@@ -6,7 +6,7 @@ import { actions, agentById, canAdmin, getDB, isExpired, isOrgAdmin, me, humanBy
 import type { Harness, Membership, MemberRole, Principal } from '../lib/types'
 import { CopyChip, DispatchMark, KeyholeIcon } from '../components/credential'
 import { showSecret } from '../lib/secrets'
-import { ImpactDialog, PrincipalChip } from '../components/shared'
+import { accessImpactRows, ImpactDialog, PrincipalChip } from '../components/shared'
 import { Button, Callout, Card, Checkbox, Field, Footer, Menu, Modal, Pill, Row, Segmented, Select, Table, Toggle, cx } from '../components/ui'
 import { useWorkspace } from './workspaces'
 
@@ -15,7 +15,7 @@ import { useWorkspace } from './workspaces'
 /* ------------------------------------------------------------------ */
 const M_COLS = '1.6fr 1.1fr 60px 60px 1.2fr 1.6fr 36px'
 
-type Pending = { kind: 'delegate' | 'demote' | 'rotate' | 'remove'; m: Membership }
+type Pending = { kind: 'delegate' | 'demote' | 'rotate' | 'remove' | 'read' | 'write'; m: Membership }
 
 export function WsMembers() {
   const d = useDB()
@@ -70,10 +70,10 @@ export function WsMembers() {
                 {m.delegatedBy && <div className="mt-0.5 text-2xs text-zinc-500">delegated by {m.delegatedBy}</div>}
               </div>
               <div>
-                {m.kind === 'human' ? <span className="text-2xs text-zinc-500" title="Humans in a workspace always see every message">Always</span> : <Toggle on={m.read} disabled={!admin} label={`Read for ${principalName(d, p(m))}`} onChange={(v) => actions.setMember(w.id, p(m), { read: v })} />}
+                {m.kind === 'human' ? <span className="text-2xs text-zinc-500" title="Humans in a workspace always see every message">Always</span> : <Toggle on={m.read} disabled={!admin} label={`Read for ${principalName(d, p(m))}`} onChange={(v) => (v ? actions.setMember(w.id, p(m), { read: true }) : setPending({ kind: 'read', m }))} />}
               </div>
               <div title={orgAdminHuman ? `${humanById(d, m.id)?.roles[d.currentOrgId]}: org admins can always write in every workspace` : undefined}>
-                <Toggle on={m.write || orgAdminHuman} disabled={!admin || orgAdminHuman} label={`Write for ${principalName(d, p(m))}`} onChange={(v) => actions.setMember(w.id, p(m), { write: v })} />
+                <Toggle on={m.write || orgAdminHuman} disabled={!admin || orgAdminHuman} label={`Write for ${principalName(d, p(m))}`} onChange={(v) => (v ? actions.setMember(w.id, p(m), { write: true }) : setPending({ kind: 'write', m }))} />
                 {orgAdminHuman && <div className="mt-0.5 text-2xs text-zinc-600">org admin</div>}
               </div>
               <div className="masked-token text-xs text-zinc-400">
@@ -125,7 +125,6 @@ export function WsMembers() {
 function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose: () => void }) {
   const d = useDB()
   const w = useWorkspace()
-  const now = useNow()
   const m = pending?.m
   const name = m ? principalName(d, { kind: m.kind, id: m.id }) : ''
   const orgAdmins = orgHumans(d).filter((h) => ['Owner', 'orgAdmin'].includes(h.roles[d.currentOrgId]))
@@ -138,7 +137,6 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
     </Callout>
   )
   const self = m?.kind === 'human' && m.id === d.currentUserId
-  const waiting = m?.kind === 'agent' ? d.messages.filter((x) => x.wsId === w.id && x.receipts[m.id] && !x.receipts[m.id].ackAt && !x.receipts[m.id].filtered && !isExpired(x, now)).length : 0
   const p = m ? ({ kind: m.kind, id: m.id } as Principal) : null
 
   const spec: { title: string; rows: [string, ReactNode, ('amber' | 'red')?][]; body: ReactNode; confirm: string; tone: 'danger' | 'primary'; run: () => void } | null =
@@ -176,7 +174,29 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
               tone: 'danger',
               run: () => actions.setMember(w.id, p, { role: 'member' }),
             }
-          : pending.kind === 'rotate'
+          : pending.kind === 'read'
+            ? {
+                title: `Turn off reading for ${name} in ${w.name}?`,
+                rows: [['Reads here after this', 'Nothing — refused at rule 5 (membership allows read)', 'amber'], ...accessImpactRows(d, m.id, w.id, false)],
+                body: 'Reversible: turn Read back on and held messages are delivered (access is re-checked at delivery). Nothing already recorded changes.',
+                confirm: 'Turn off read',
+                tone: 'danger',
+                run: () => actions.setMember(w.id, p, { read: false }),
+              }
+            : pending.kind === 'write'
+              ? {
+                  title: `Turn off writing for ${name} in ${w.name}?`,
+                  rows: [
+                    ['Can no longer', m.kind === 'agent' ? 'Send messages, expire its messages, retry webhooks, write shared context' : 'Post, expire messages, retry webhooks, edit shared context', 'amber'],
+                    ['Still can', m.kind === 'agent' ? 'Read what’s addressed to it' : 'See and search every message'],
+                    ['Already sent', 'Stays as it is'],
+                  ],
+                  body: 'Reversible: turn Write back on at any time.',
+                  confirm: 'Turn off write',
+                  tone: 'danger',
+                  run: () => actions.setMember(w.id, p, { write: false }),
+                }
+              : pending.kind === 'rotate'
             ? {
                 title: `Rotate ${name}’s workspace token?`,
                 rows: [
@@ -197,7 +217,7 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
                 rows: [
                   ['Kind', m.kind],
                   ['Role', m.role + (m.delegatedBy ? ` (delegated by ${m.delegatedBy})` : '')],
-                  ['Messages waiting for it', m.kind === 'agent' ? `${waiting}${waiting ? ' — filtered, never delivered' : ''}` : '—', waiting ? 'amber' : undefined],
+                  ...(m.kind === 'agent' ? accessImpactRows(d, m.id, w.id, true) : []),
                   ['Workspace token', m.kind === 'agent' ? `${maskWsToken(m.tokenLast4 ?? '')} — stops working immediately` : '—', m.kind === 'agent' ? 'amber' : undefined],
                 ],
                 body: (
@@ -340,7 +360,6 @@ export function WsAccess() {
   const [confirmBlock, setConfirmBlock] = useState<string | null>(null)
   const blockee = confirmBlock ? agentById(d, confirmBlock) : undefined
   const blockeeMember = confirmBlock ? w.members.find((m) => m.kind === 'agent' && m.id === confirmBlock) : undefined
-  const blockeePending = confirmBlock ? d.messages.filter((m) => m.wsId === w.id && !isExpired(m) && m.receipts[confirmBlock] && !m.receipts[confirmBlock].filtered && !m.receipts[confirmBlock].ackAt) : []
 
   return (
     <div className="mt-5 grid grid-cols-2 gap-5">
@@ -385,10 +404,10 @@ export function WsAccess() {
           rows={[
             ['Membership', blockeeMember ? `${blockeeMember.role}${blockeeMember.role === 'admin' ? ' — loses admin here while blocked' : ''}` : 'Not a member', blockeeMember?.role === 'admin' ? 'red' : undefined],
             ['Workspace token', blockeeMember ? `${maskWsToken(blockeeMember.tokenLast4 ?? '')} — refused from now on (stays valid, the block wins)` : '—', blockeeMember ? 'amber' : undefined],
-            ['Messages pending for it', `${blockeePending.length}${blockeePending.length ? ' — filtered now, never delivered' : ''}`, blockeePending.length ? 'amber' : undefined],
+            ...(confirmBlock ? accessImpactRows(d, confirmBlock, w.id, true) : []),
             ['Connected', blockee && isOnline(blockee) ? 'Yes — its next request is refused' : 'No'],
           ]}
-          body="Every refused attempt is logged with the rule. Unblocking later doesn't bring back the messages filtered now."
+          body="Every refused attempt is logged with the rule. What it already received, read or acknowledged stays as recorded. Unblocking later doesn't bring back the messages filtered now."
           confirmLabel="Block agent"
           onConfirm={() => {
             if (!confirmBlock) return

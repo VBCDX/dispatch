@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
-import { actions, agentById, emailTaken, isExpired, isOnline, isOrgAdmin, labelTaken, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
+import { actions, agentById, emailTaken, isOnline, isOrgAdmin, labelTaken, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
 import type { Agent, AgentFilters, Harness, OrgRole } from '../lib/types'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
-import { AgentGlyph, AuditLog, ImpactDialog, ListBody, PrincipalChip } from '../components/shared'
+import { accessImpactRows, AgentGlyph, AuditLog, ImpactDialog, ListBody, PrincipalChip } from '../components/shared'
 import { Breadcrumb, Button, Card, Field, Footer, Input, Modal, PageTitle, Pill, Row, Segmented, StatusInline, Table, Textarea, Toggle, cx } from '../components/ui'
 
 /* ------------------------------------------------------------------ */
@@ -147,6 +147,7 @@ export function AgentDetail() {
   const [revoking, setRevoking] = useState(false)
   const [suspending, setSuspending] = useState(false)
   const [rotating, setRotating] = useState(false)
+  const [savingFilters, setSavingFilters] = useState(false)
   const [f, setF] = useState<AgentFilters | null>(a?.filters ?? null)
   useEffect(() => setF(a?.filters ?? null), [a?.id]) // eslint-disable-line
   if (!a || !f) return <div className="text-sm text-zinc-400">No such agent. <Link to="/agents">Back to agents</Link></div>
@@ -156,7 +157,10 @@ export function AgentDetail() {
   const inbox = d.messages.filter((m) => m.receipts[a.id]).sort((x, y) => y.createdAt - x.createdAt).slice(0, 12)
   const dirty = JSON.stringify(f) !== JSON.stringify(a.filters)
   const others = orgAgents(d).filter((x) => x.id !== a.id)
-  const pendingFor = d.messages.filter((m) => m.receipts[a.id] && !m.receipts[a.id].ackAt && !m.receipts[a.id].filtered && !isExpired(m, now)).length
+  // Saving filters that take access away gets an impact preview first.
+  const newWsBlocks = f.workspaceBlocklist.filter((x) => !a.filters.workspaceBlocklist.includes(x))
+  const newAuthorBlocks = f.agentBlocklist.filter((x) => !a.filters.agentBlocklist.includes(x))
+  const reducing = (a.filters.read && !f.read) || (a.filters.write && !f.write) || newWsBlocks.length > 0 || newAuthorBlocks.length > 0
 
   return (
     <div className="max-w-[1120px]">
@@ -226,7 +230,7 @@ export function AgentDetail() {
           </Field>
           {admin && (
             <div className="mt-4 flex gap-2">
-              <Button variant="primary" size="sm" disabled={!dirty} onClick={() => actions.setAgentFilters(a.id, f)}>
+              <Button variant="primary" size="sm" disabled={!dirty} onClick={() => (reducing ? setSavingFilters(true) : actions.setAgentFilters(a.id, f))}>
                 Save filters
               </Button>
               {dirty && (
@@ -298,6 +302,20 @@ export function AgentDetail() {
         }}
       />
       <ImpactDialog
+        open={savingFilters}
+        onClose={() => setSavingFilters(false)}
+        title={`Narrow ${a.label}’s own filters?`}
+        rows={[
+          ...(a.filters.read && !f.read ? ([['Read off — everywhere', 'Reversible'], ...accessImpactRows(d, a.id, undefined, false)] as [string, ReactNode, ('amber' | 'red')?][]) : []),
+          ...(a.filters.write && !f.write ? ([['Write off — everywhere', 'It can’t send or expire; what it sent stays']] as [string, ReactNode][]) : []),
+          ...newWsBlocks.flatMap((id) => [[`Blocks ${wsById(d, id)?.name ?? id}`, 'Final for what’s queued there', 'amber'] as [string, ReactNode, 'amber'], ...accessImpactRows(d, a.id, id, true)]),
+          ...(newAuthorBlocks.length ? ([[`Blocks messages from`, newAuthorBlocks.map((x) => agentById(d, x)?.label ?? x).join(', ') + ' — queued ones are filtered; already delivered ones stay']] as [string, ReactNode][]) : []),
+        ]}
+        body="Blocks are final for what hasn’t been delivered yet; turning reading off only holds it. Nothing already recorded changes."
+        confirmLabel="Save filters"
+        onConfirm={() => actions.setAgentFilters(a.id, f)}
+      />
+      <ImpactDialog
         open={suspending}
         onClose={() => setSuspending(false)}
         title={`Suspend ${a.label}?`}
@@ -305,9 +323,9 @@ export function AgentDetail() {
           ['Connected now', isOnline(a) ? 'Yes — disconnected now' : 'No', isOnline(a) ? 'amber' : undefined],
           ['Workspaces', memberships.map((w) => w.name).join(', ') || 'None'],
           ['Admin in', memberships.filter((w) => w.members.some((m) => m.id === a.id && m.role === 'admin')).map((w) => w.name).join(', ') || 'None', memberships.some((w) => w.members.some((m) => m.id === a.id && m.role === 'admin')) ? 'amber' : undefined],
-          ['Messages pending for it', `${pendingFor} — filtered now, never delivered`, pendingFor ? 'amber' : undefined],
+          ...accessImpactRows(d, a.id, undefined, false),
         ]}
-        body="Its tokens stay valid but every request is refused until you resume it. Messages filtered now aren't re-delivered on resume."
+        body="Reversible: its tokens stay valid but every request is refused until you resume it. Queued messages are held, not dropped — resuming delivers them (re-checked at delivery). Nothing it already recorded changes."
         confirmLabel="Suspend agent"
         onConfirm={() => actions.setAgentStatus(a.id, 'suspended')}
       />
@@ -319,9 +337,9 @@ export function AgentDetail() {
           ['Last seen', ago(a.lastSeen, now), a.lastSeen && now - a.lastSeen < 3_600_000 ? 'amber' : undefined],
           ['Workspaces', memberships.map((w) => w.name).join(', ') || 'None'],
           ['Admin in', memberships.filter((w) => w.members.some((m) => m.id === a.id && m.role === 'admin')).map((w) => w.name).join(', ') || 'None'],
-          ['Messages pending for it', `${pendingFor}${pendingFor ? ' — filtered now, never delivered' : ''}`, pendingFor ? 'amber' : undefined],
+          ...accessImpactRows(d, a.id, undefined, true),
         ]}
-        body="Its agent token and every workspace token stop working now. Its next request is refused and logged. This can’t be undone."
+        body="Its agent token and every workspace token stop working now. Its next request is refused and logged. What it already received, read or acknowledged stays as recorded. This can’t be undone."
         confirmLabel="Revoke agent"
         onConfirm={() => actions.setAgentStatus(a.id, 'revoked')}
       />

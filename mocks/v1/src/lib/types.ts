@@ -92,8 +92,18 @@ export interface Receipt {
   ackAt?: number
   /** Not delivered because of a filter — says which one. */
   filtered?: string
-  /** Set when the receipt was filtered after the message was sent (access changed while it was pending). */
+  /** Set when the receipt was filtered after the message was sent (a final refusal while it was still queued). */
   filteredAt?: number
+  filteredCause?: string
+  /** Queued but held: a reversible refusal (suspended, read off). Re-checked at delivery, then delivered or filtered. */
+  held?: string
+  heldCause?: string
+  heldAt?: number
+  /**
+   * Access was removed after this receipt was delivered. The receipt keeps what
+   * it recorded (delivered, read, acknowledged); this is only a note.
+   */
+  removed?: { at: number; reason: string; final: boolean; cause: string }
 }
 
 export type FireTrigger = 'send' | 'all-read' | 'all-ack'
@@ -130,8 +140,10 @@ export type Webhook =
       /** A failed attempt schedules the next one (30 s, 2 min, 10 min). */
       nextAttemptAt?: number
       /** Terminal states. Absent while waiting for the trigger or retrying. */
-      outcome?: 'delivered' | 'gave-up' | 'no-targets' | 'expired'
+      outcome?: 'delivered' | 'gave-up' | 'no-targets' | 'expired' | 'target-lost'
       outcomeAt?: number
+      /** Targets that could no longer receive the message before meeting the trigger — why it won't fire. */
+      dropped?: { agentId: string; cause: string; reason: string; at: number }[]
     }
   | {
       mode: 'listen'

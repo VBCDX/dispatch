@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { audienceLabel, filteredReason, targets } from '../lib/access'
+import { accessVerdict, audienceLabel, targets } from '../lib/access'
 import { ago, clock, maskHookPassword, plural, until } from '../lib/format'
 import { actions, agentById, canAdmin, canPost, fireState, isExpired, MAX_ATTEMPTS, mayExpire, isOnline, orgEvents, principalName, receiptState, useDB, useNow, type ReceiptState } from '../lib/store'
 import type { Audience, FireTrigger, Message, Workspace } from '../lib/types'
@@ -15,12 +15,13 @@ import { Button, Callout, Checkbox, Field, Footer, Input, Pill, Segmented, Selec
 const STATE_STYLE: Record<ReceiptState, string> = {
   queued: 'border-zinc-700 text-zinc-500 border-dashed',
   expired: 'border-zinc-800 text-zinc-500 border-dashed',
+  held: 'border-amber-500/40 text-amber-400 border-dashed',
   delivered: 'border-zinc-600 text-zinc-300 bg-line',
   read: 'border-signal/40 text-signal-light bg-signal/10',
   acked: 'border-green-500/40 text-green-400 bg-green-500/10',
   filtered: 'border-zinc-800 text-zinc-600 line-through',
 }
-const STATE_LABEL: Record<ReceiptState, string> = { queued: 'Queued', delivered: 'Delivered', read: 'Read', acked: 'Acknowledged', filtered: 'Filtered', expired: 'Never delivered' }
+const STATE_LABEL: Record<ReceiptState, string> = { queued: 'Queued', delivered: 'Delivered', read: 'Read', acked: 'Acknowledged', filtered: 'Filtered', expired: 'Never delivered', held: 'Held' }
 
 export function ReceiptPills({ m, max = 8 }: { m: Message; max?: number }) {
   const d = useDB()
@@ -31,7 +32,7 @@ export function ReceiptPills({ m, max = 8 }: { m: Message; max?: number }) {
         const s = receiptState(r, m)
         const a = agentById(d, id)
         return (
-          <span key={id} title={`${a?.label}: ${STATE_LABEL[s]}${r.filtered ? ` — ${r.filtered}` : ''}`} className={cx('rounded border px-1.5 py-px font-mono text-[10.5px]', STATE_STYLE[s])}>
+          <span key={id} title={`${a?.label}: ${STATE_LABEL[s]}${r.filtered ? ` — ${r.filtered}` : r.held ? ` — ${r.held}` : r.removed ? ` — access removed at ${clock(r.removed.at)}: ${r.removed.reason}` : ''}`} className={cx('rounded border px-1.5 py-px font-mono text-[10.5px]', STATE_STYLE[s])}>
             {a?.label ?? id}
             {s === 'acked' ? ' ✓✓' : s === 'read' ? ' ✓' : ''}
           </span>
@@ -55,7 +56,16 @@ export function fireSummary(m: Message, now: number, name: (id: string) => strin
   const verb = m.webhook.trigger === 'all-read' ? 'read' : 'acknowledge'
   switch (s.k) {
     case 'waiting':
-      return { tone: 'neutral', short: 'waiting', long: m.webhook.trigger === 'send' ? 'Firing…' : `Not fired yet — waiting for ${s.pending.map(name).join(', ')} to ${verb} it (${s.total - s.pending.length} of ${s.total} done). Filtered targets drop out of “every target”.` }
+      return {
+        tone: 'neutral',
+        short: 'waiting',
+        long:
+          m.webhook.trigger === 'send'
+            ? 'Firing…'
+            : `Not fired yet — waiting for ${s.pending.map((id) => `${name(id)}${s.held.includes(id) ? ` (held — ${m.receipts[id]?.heldCause ?? m.receipts[id]?.removed?.cause})` : ''}`).join(', ')} to ${verb} it (${s.total - s.pending.length} of ${s.total} done). A refusal never counts as completion.`,
+      }
+    case 'target-lost':
+      return { tone: 'red', short: 'won’t fire', long: `Won’t fire: ${s.dropped.map((x) => `${name(x.agentId)} can no longer receive it (${x.cause})`).join('; ')}. A refusal never counts as ${verb === 'read' ? 'reading' : 'acknowledging'}.` }
     case 'delivered':
       return { tone: 'green', short: '200', long: `Delivered on attempt ${s.attempt} at ${clock(s.at)}.` }
     case 'retrying': {
@@ -294,9 +304,11 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
   const preview = useMemo(() => {
     const draft = { audience, author: { kind: 'human' as const, id: d.currentUserId } }
     const ids = targets(ws, draft)
-    const filtered = ids.map((id) => ({ id, why: filteredReason(d, ws, draft, agentById(d, id)!) })).filter((x) => x.why)
-    const offline = ids.filter((id) => !filtered.some((f) => f.id === id) && !isOnline(agentById(d, id)!))
-    return { total: ids.length, filtered, offline }
+    const verdicts = ids.map((id) => ({ id, v: accessVerdict(d, ws, draft, agentById(d, id)!) }))
+    const filtered = verdicts.filter((x) => x.v?.final).map((x) => ({ id: x.id, why: x.v!.reason }))
+    const held = verdicts.filter((x) => x.v && !x.v.final).map((x) => ({ id: x.id, why: x.v!.reason }))
+    const offline = verdicts.filter((x) => !x.v && !isOnline(agentById(d, x.id)!)).map((x) => x.id)
+    return { total: ids.length, filtered, held, offline }
   }, [d, ws, audience])
 
   const expiryHours = expiry === 'none' ? null : Number(expiry)
@@ -455,8 +467,14 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
       )}
       <div className="flex items-center justify-between gap-4">
         <div className={cx('text-xs', nobody ? 'text-amber-400' : 'text-zinc-500')}>
-          {hasAgents ? <>Reaches {plural(reachable, 'agent')}</> : <>No agents in {ws.name} yet</>}
+          {hasAgents ? <>Reaches {plural(reachable - preview.held.length, 'agent')}</> : <>No agents in {ws.name} yet</>}
           {preview.offline.length > 0 && <> · {preview.offline.length} offline — queued until they connect</>}
+          {preview.held.length > 0 && (
+            <span className="text-amber-400" title={preview.held.map((f) => `${agentById(d, f.id)?.label}: ${f.why}`).join('\n')}>
+              {' '}
+              · {preview.held.length} held until access returns ({preview.held.map((f) => agentById(d, f.id)?.label).join(', ')})
+            </span>
+          )}
           {preview.filtered.length > 0 && (
             <span className="text-amber-400" title={preview.filtered.map((f) => `${agentById(d, f.id)?.label}: ${f.why}`).join('\n')}>
               {' '}
@@ -590,8 +608,18 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                 </div>
                 {r.filtered && (
                   <div className="mt-1 pl-[26px] text-2xs text-zinc-500">
-                    {r.filteredAt && <span className="text-amber-400">Filtered at {clock(r.filteredAt)}, after it was sent — access changed. </span>}
+                    {r.filteredAt && <span className="text-amber-400">Filtered at {clock(r.filteredAt)} while still queued — never delivered. </span>}
                     {r.filtered}
+                  </div>
+                )}
+                {r.held && !expired && (
+                  <div className="mt-1 pl-[26px] text-2xs text-amber-400">
+                    Held — {r.held} Re-checked at delivery: delivered when access returns, filtered if it’s removed for good.
+                  </div>
+                )}
+                {r.removed && (
+                  <div className="mt-1 pl-[26px] text-2xs text-zinc-500">
+                    <span className="text-amber-400">Access removed at {clock(r.removed.at)}</span> — {r.removed.reason} What it already recorded stays as it is.
                   </div>
                 )}
               </div>
@@ -716,6 +744,12 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                 <PrincipalChip p={r.author} size={18} />
                 {r.author.kind === 'webhook' && <Pill tone="blue" className="!py-0">via listener</Pill>}
                 {r.sentVia && <ConsolePill humanId={r.sentVia.humanId} />}
+                {r.webhook && <WebhookBadge m={r} />}
+                {r.webhook && (
+                  <Link to={`/workspaces/${ws.id}/messages?m=${r.id}`} className="text-2xs" aria-label={`Open reply ${r.id} and its webhook`}>
+                    Open →
+                  </Link>
+                )}
                 <span className="ml-auto text-zinc-500">{ago(r.createdAt, now).toLowerCase()}</span>
               </div>
               <div className="mt-1.5 text-[13px] whitespace-pre-wrap text-zinc-200">{r.body}</div>
