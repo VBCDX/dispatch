@@ -121,6 +121,7 @@ export function AudiencePicker({ ws, value, onChange }: { ws: Workspace; value: 
     <div className="flex flex-col gap-2">
       <Segmented
         size="sm"
+        label="Audience"
         value={value.mode}
         onChange={(mode) => onChange(mode === 'all' ? { mode } : { mode, agentIds: ids })}
         options={[
@@ -351,6 +352,7 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
         <div className="flex flex-col gap-3 rounded-lg border border-edge bg-rail p-3.5">
           <Segmented
             size="sm"
+            label="Webhook mode"
             value={hookMode}
             onChange={setHookMode}
             options={[

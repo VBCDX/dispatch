@@ -118,6 +118,7 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
       </Field>
       <Field label="Harness" hint="Informational — membership never depends on the harness.">
         <Segmented
+          label="Harness"
           value={harness}
           onChange={setHarness}
           options={(['Claude Code', 'Codex', 'OpenCode', 'Other'] as Harness[]).map((h) => ({ value: h, label: h }))}
@@ -215,11 +216,11 @@ export function AgentDetail() {
             </span>
           </div>
           <Field label="Never enter these workspaces">
-            <IdChips ids={f.workspaceBlocklist} label={(id) => wsById(d, id)?.name ?? id} options={allWs.map((w) => ({ id: w.id, label: `${w.name} · ${w.id}` }))} onChange={(ids) => setF({ ...f, workspaceBlocklist: ids })} disabled={!admin} />
+            <IdChips ids={f.workspaceBlocklist} label={(id) => wsById(d, id)?.name ?? id} options={allWs.map((w) => ({ id: w.id, label: `${w.name} · ${w.id}` }))} onChange={(ids) => setF({ ...f, workspaceBlocklist: ids })} disabled={!admin} what="blocked workspaces" />
           </Field>
           <div className="mt-3" />
           <Field label="Never receive messages from these agents">
-            <IdChips ids={f.agentBlocklist} label={(id) => agentById(d, id)?.label ?? id} options={others.map((x) => ({ id: x.id, label: `${x.label} · ${x.id}` }))} onChange={(ids) => setF({ ...f, agentBlocklist: ids })} disabled={!admin} />
+            <IdChips ids={f.agentBlocklist} label={(id) => agentById(d, id)?.label ?? id} options={others.map((x) => ({ id: x.id, label: `${x.label} · ${x.id}` }))} onChange={(ids) => setF({ ...f, agentBlocklist: ids })} disabled={!admin} what="blocked authors" />
           </Field>
           {admin && (
             <div className="mt-4 flex gap-2">
@@ -299,31 +300,44 @@ export function AgentDetail() {
   )
 }
 
-function IdChips({ ids, label, options, onChange, disabled }: { ids: string[]; label: (id: string) => string; options: { id: string; label: string }[]; onChange: (ids: string[]) => void; disabled?: boolean }) {
+function IdChips({ ids, label, options, onChange, disabled, what }: { ids: string[]; label: (id: string) => string; options: { id: string; label: string }[]; onChange: (ids: string[]) => void; disabled?: boolean; what: string }) {
+  const [pick, setPick] = useState('')
+  const left = options.filter((o) => !ids.includes(o.id))
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {ids.map((id) => (
         <span key={id} className="inline-flex items-center gap-1.5 rounded-full border border-red-500/30 bg-red-500/[0.06] px-2 py-0.5 text-xs text-red-300">
           {label(id)}
           {!disabled && (
-            <button type="button" aria-label={`Remove ${label(id)}`} className="text-zinc-500 hover:text-zinc-200" onClick={() => onChange(ids.filter((x) => x !== id))}>
+            <button type="button" aria-label={`Remove ${label(id)} from ${what}`} className="text-zinc-500 hover:text-zinc-200" onClick={() => onChange(ids.filter((x) => x !== id))}>
               ✕
             </button>
           )}
         </span>
       ))}
       {!ids.length && <span className="text-xs text-zinc-600">None</span>}
-      {!disabled && (
-        <select aria-label="Add" value="" onChange={(e) => e.target.value && onChange([...ids, e.target.value])} className="rounded-md border border-edge bg-page px-2 py-0.5 text-xs text-zinc-500 outline-none">
-          <option value="">+ add</option>
-          {options
-            .filter((o) => !ids.includes(o.id))
-            .map((o) => (
+      {!disabled && left.length > 0 && (
+        <span className="inline-flex items-center gap-1">
+          <select aria-label={`Choose one to add to ${what}`} value={pick} onChange={(e) => setPick(e.target.value)} className="rounded-md border border-edge bg-page px-2 py-0.5 text-xs text-zinc-400 outline-none">
+            <option value="">Choose…</option>
+            {left.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.label}
               </option>
             ))}
-        </select>
+          </select>
+          <button
+            type="button"
+            disabled={!pick}
+            onClick={() => {
+              onChange([...ids, pick])
+              setPick('')
+            }}
+            className="rounded-md border border-edge px-2 py-0.5 text-xs text-zinc-300 hover:text-zinc-100 disabled:opacity-40"
+          >
+            Add
+          </button>
+        </span>
       )}
     </div>
   )
@@ -378,6 +392,7 @@ export function PeoplePage() {
         </Field>
         <Field label="Org role" hint="Owner and orgAdmin can see and administer every workspace. Members see the workspaces they’re added to.">
           <Segmented
+            label="Org role"
             value={role}
             onChange={setRole}
             options={[

@@ -162,6 +162,7 @@ function AddMemberModal({ open, onClose, onToken }: { open: boolean; onClose: ()
   return (
     <Modal open={open} onClose={onClose} width={500} title={`Add to ${w.name}`}>
       <Segmented
+        label="Kind of member"
         value={kind}
         onChange={setKind}
         options={[
@@ -194,6 +195,7 @@ function AddMemberModal({ open, onClose, onToken }: { open: boolean; onClose: ()
       </Field>
       <Field label="Role" hint={role === 'admin' ? `Delegated admin: can add and remove members, delegate admin, set the blocklist and manage webhooks${kind === 'agent' ? ' — over the API and MCP' : ''}.` : 'Reads and writes messages as allowed below.'}>
         <Segmented
+          label="Role"
           value={role}
           onChange={setRole}
           options={[
@@ -257,7 +259,7 @@ export function WsAccess() {
               <span className="font-mono text-red-300">{agentById(d, id)?.label}</span>
               <span className="font-mono text-2xs text-zinc-500">{id}</span>
               {admin && (
-                <button type="button" aria-label="Unblock" className="text-zinc-500 hover:text-zinc-200" onClick={() => actions.setWsBlocklist(w.id, w.agentBlocklist.filter((x) => x !== id))}>
+                <button type="button" aria-label={`Unblock ${agentById(d, id)?.label ?? id}`} className="text-zinc-500 hover:text-zinc-200" onClick={() => actions.setWsBlocklist(w.id, w.agentBlocklist.filter((x) => x !== id))}>
                   ✕
                 </button>
               )}
@@ -312,6 +314,7 @@ export function WsAccess() {
           </select>
           <Segmented
             size="sm"
+            label="Operation"
             value={op}
             onChange={setOp}
             options={[
@@ -443,7 +446,7 @@ export function WsConnect() {
               ))}
             </Select>
           </Field>
-          <Segmented size="sm" value={h} onChange={setH} options={HARNESSES.map((x) => ({ value: x, label: x }))} className="mb-1" />
+          <Segmented size="sm" label="Harness" value={h} onChange={setH} options={HARNESSES.map((x) => ({ value: x, label: x }))} className="mb-1" />
         </div>
         <div className="grid grid-cols-[170px_1fr] items-center gap-x-4 gap-y-2 rounded-[10px] border border-edge bg-panel p-4 text-sm2">
           <span className="text-zinc-500">Agent ID</span>
