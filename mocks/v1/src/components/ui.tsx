@@ -430,10 +430,11 @@ export function useLayer(open: boolean, onEscape: (() => void) | null, trap?: Re
     document.addEventListener('keydown', onKey)
     if (el) document.addEventListener('focusin', onFocusIn)
     return () => {
+      const wasTop = top()
       layerStack.splice(layerStack.indexOf(id), 1)
       document.removeEventListener('keydown', onKey)
       document.removeEventListener('focusin', onFocusIn)
-      if (el && prev && document.contains(prev)) prev.focus()
+      if (el && wasTop && prev && document.contains(prev)) prev.focus()
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 }

@@ -390,6 +390,21 @@ export const actions = {
       log(d, { wsId: m.wsId, type: 'message', object: `Expired ${m.id} early`, result: m.webhook?.mode === 'listen' ? 'Listener closed' : 'Done' })
     })
   },
+  /** Issues a new basic-auth password for a message's listener. The old one stops working now. */
+  rotateListenerPassword(msgId: string): string | null {
+    const password = newHookPassword()
+    let ok = false
+    update((d) => {
+      const m = d.messages.find((x) => x.id === msgId)
+      if (!m || m.webhook?.mode !== 'listen' || isExpired(m)) return
+      const old = m.webhook.passwordLast4
+      m.webhook.passwordLast4 = password.slice(-4)
+      sessionSecrets.set(`hook:${m.id}`, password)
+      ok = true
+      log(d, { wsId: m.wsId, type: 'webhook', severity: 'info', object: `Rotated listener password ${m.webhook.url.split('/').pop()} · message ${m.id}`, result: `••••${old} → ••••${m.webhook.passwordLast4}`, reason: 'The old password stops working now; calls using it get 401.', link: { label: 'Open the message', to: `/workspaces/${m.wsId}/messages?m=${m.id}` } })
+    })
+    return ok ? password : null
+  },
   retryWebhook(msgId: string) {
     update((d) => {
       const m = d.messages.find((x) => x.id === msgId)

@@ -4,7 +4,8 @@ import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
 import { actions, agentById, isOnline, isOrgAdmin, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
 import type { Agent, AgentFilters, Harness, OrgRole } from '../lib/types'
-import { CopyChip, TokenPanel } from '../components/credential'
+import { CopyChip } from '../components/credential'
+import { showSecret } from '../lib/secrets'
 import { AgentGlyph, AuditLog, ImpactDialog, ListBody, PrincipalChip } from '../components/shared'
 import { Breadcrumb, Button, Card, Field, Footer, Input, Modal, PageTitle, Pill, Row, Segmented, StatusInline, Table, Textarea, Toggle, cx } from '../components/ui'
 
@@ -81,36 +82,31 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
   const [label, setLabel] = useState('')
   const [harness, setHarness] = useState<Harness>('Claude Code')
   const [desc, setDesc] = useState('')
-  const [made, setMade] = useState<{ id: string; token: string } | null>(null)
   useEffect(() => {
     if (open) {
       const n = orgAgents(d).length
       setLabel(n === 0 ? 'planner' : n === 1 ? 'builder' : '')
       setHarness(n === 1 ? 'Codex' : 'Claude Code')
       setDesc('')
-      setMade(null)
     }
   }, [open]) // eslint-disable-line
   const clash = orgAgents(d).some((a) => a.label === label.trim() && a.status !== 'revoked')
-  if (made)
-    return (
-      <Modal open={open} onClose={() => {}} width={560} dismissable={false}>
-        <TokenPanel
-          token={made.token}
-          title="Agent registered"
-          subtitle={
-            <span>
-              <span className="font-mono">{label}</span> · {harness} · agent ID <span className="font-mono text-zinc-200">{made.id}</span>
-            </span>
-          }
-          note="With the agent ID, this token opens the agent-only flows. Add the agent to a workspace to give it a workspace token too."
-          onDone={() => {
-            onClose()
-            nav(`/agents/${made.id}`)
-          }}
-        />
-      </Modal>
-    )
+  const register = () => {
+    const made = actions.createAgent({ label: label.trim(), harness, description: desc })
+    onClose()
+    nav(`/agents/${made.id}`)
+    showSecret({
+      kind: 'token',
+      title: 'Agent registered',
+      token: made.token,
+      subtitle: (
+        <span>
+          <span className="font-mono">{label.trim()}</span> · {harness} · agent ID <span className="font-mono text-zinc-200">{made.id}</span>
+        </span>
+      ),
+      note: 'With the agent ID, this token opens the agent-only flows. Add the agent to a workspace to give it a workspace token too.',
+    })
+  }
   return (
     <Modal open={open} onClose={onClose} width={480} title="Register agent">
       <Field label="Label" hint="Short and lowercase reads best in logs." error={clash ? 'An active agent already uses this label.' : null}>
@@ -131,7 +127,7 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
         <Button size="lg" onClick={onClose}>
           Cancel
         </Button>
-        <Button size="lg" variant="primary" disabled={!label.trim() || clash} onClick={() => setMade(actions.createAgent({ label: label.trim(), harness, description: desc }))}>
+        <Button size="lg" variant="primary" disabled={!label.trim() || clash} onClick={register}>
           Register agent
         </Button>
       </Footer>
@@ -139,12 +135,15 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
   )
 }
 
+export function showAgentToken(a: Agent, token: string) {
+  showSecret({ kind: 'token', title: 'Agent token rotated', token, subtitle: `${a.label} · ${a.id}`, note: 'The old token keeps working for 10 minutes so a running agent can switch over. Workspace tokens are unchanged.' })
+}
+
 export function AgentDetail() {
   const d = useDB()
   const now = useNow()
   const { agentId } = useParams()
   const a = agentById(d, agentId)
-  const [rotated, setRotated] = useState<string | null>(null)
   const [revoking, setRevoking] = useState(false)
   const [f, setF] = useState<AgentFilters | null>(a?.filters ?? null)
   useEffect(() => setF(a?.filters ?? null), [a?.id]) // eslint-disable-line
@@ -166,7 +165,7 @@ export function AgentDetail() {
           a.status !== 'revoked' && (
             <>
               {a.status === 'active' && <Button onClick={() => actions.connectAgent(a.id, !a.connected)}>{a.connected ? 'Simulate disconnect' : 'Simulate connect'}</Button>}
-              <Button onClick={() => setRotated(actions.rotateAgentToken(a.id))}>Rotate token</Button>
+              <Button onClick={() => showAgentToken(a, actions.rotateAgentToken(a.id))}>Rotate token</Button>
               <Button onClick={() => actions.setAgentStatus(a.id, a.status === 'suspended' ? 'active' : 'suspended')}>{a.status === 'suspended' ? 'Resume' : 'Suspend'}</Button>
               <Button variant="danger" onClick={() => setRevoking(true)}>
                 Revoke
@@ -279,9 +278,6 @@ export function AgentDetail() {
       <div className="eyebrow mt-7 mb-3">Activity</div>
       <AuditLog events={orgEvents(d).filter((e) => e.actorId === a.id || e.object.includes(a.label) || e.object.includes(a.id))} />
 
-      <Modal open={!!rotated} onClose={() => {}} width={560} dismissable={false}>
-        {rotated && <TokenPanel token={rotated} title="Agent token rotated" subtitle={`${a.label} · ${a.id}`} note="The old token keeps working for 10 minutes so a running agent can switch over. Workspace tokens are unchanged." onDone={() => setRotated(null)} />}
-      </Modal>
       <ImpactDialog
         open={revoking}
         onClose={() => setRevoking(false)}

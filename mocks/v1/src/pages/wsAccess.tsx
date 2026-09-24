@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { evaluate, type Op } from '../lib/access'
 import { ago, maskAgentToken, maskWsToken, plural } from '../lib/format'
-import { actions, agentById, canAdmin, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
+import { actions, agentById, canAdmin, getDB, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
 import type { Harness, Membership, MemberRole, Principal } from '../lib/types'
-import { CopyChip, DispatchMark, KeyholeIcon, TokenPanel } from '../components/credential'
+import { CopyChip, DispatchMark, KeyholeIcon } from '../components/credential'
+import { showSecret } from '../lib/secrets'
 import { ImpactDialog, PrincipalChip } from '../components/shared'
 import { Button, Callout, Card, Checkbox, Field, Footer, Menu, Modal, Pill, Row, Segmented, Select, Table, Toggle, cx } from '../components/ui'
 import { useWorkspace } from './workspaces'
@@ -20,7 +21,6 @@ export function WsMembers() {
   const now = useNow()
   const admin = canAdmin(d, w)
   const [adding, setAdding] = useState(false)
-  const [token, setToken] = useState<{ title: string; token: string; agentId: string } | null>(null)
   const [removing, setRemoving] = useState<Membership | null>(null)
   const sorted = [...w.members].sort((a, b) => (a.kind === b.kind ? (a.role === b.role ? 0 : a.role === 'admin' ? -1 : 1) : a.kind === 'human' ? -1 : 1))
   const p = (m: Membership): Principal => ({ kind: m.kind, id: m.id })
@@ -86,7 +86,7 @@ export function WsMembers() {
                       m.role === 'admin'
                         ? { label: 'Remove admin', disabled: lastAdmin, onClick: () => actions.setMember(w.id, p(m), { role: 'member' }) }
                         : { label: `Delegate admin to this ${m.kind}`, onClick: () => actions.setMember(w.id, p(m), { role: 'admin' }) },
-                      m.kind === 'agent' ? { label: 'Rotate workspace token', onClick: () => setToken({ title: 'Workspace token rotated', token: actions.rotateMemberToken(w.id, m.id), agentId: m.id }) } : null,
+                      m.kind === 'agent' ? { label: 'Rotate workspace token', onClick: () => showWsToken(w, m.id, actions.rotateMemberToken(w.id, m.id), 'Workspace token rotated') } : null,
                       { label: 'Remove from workspace', danger: true, disabled: lastAdmin, onClick: () => setRemoving(m) },
                     ]}
                   />
@@ -98,26 +98,7 @@ export function WsMembers() {
       </Table>
       {admins.length === 1 && <div className="mt-2 text-xs text-zinc-500">A workspace always keeps at least one admin.</div>}
 
-      <AddMemberModal
-        open={adding}
-        onClose={() => setAdding(false)}
-        onToken={(t, agentId) => setToken({ title: 'Agent added', token: t, agentId })}
-      />
-      <Modal open={!!token} onClose={() => {}} width={560} dismissable={false}>
-        {token && (
-          <TokenPanel
-            token={token.token}
-            title={token.title}
-            subtitle={
-              <span>
-                <span className="font-mono">{agentById(d, token.agentId)?.label}</span> in {w.name}. This agent presents it together with its agent ID + agent token and <span className="font-mono">X-Dispatch-Workspace-Id: {w.id}</span>.
-              </span>
-            }
-            note={<Link to={`/workspaces/${w.id}/connect?agent=${token.agentId}`}>Open connection instructions →</Link>}
-            onDone={() => setToken(null)}
-          />
-        )}
-      </Modal>
+      <AddMemberModal open={adding} onClose={() => setAdding(false)} onToken={(t, agentId) => showWsToken(w, agentId, t, 'Agent added')} />
       <ImpactDialog
         open={!!removing}
         onClose={() => setRemoving(null)}
@@ -138,6 +119,22 @@ export function WsMembers() {
       />
     </div>
   )
+}
+
+/** Hands a freshly issued workspace token to the root secret host. */
+export function showWsToken(w: { id: string; name: string }, agentId: string, token: string, title: string, note?: ReactNode) {
+  const label = agentById(getDB(), agentId)?.label ?? agentId
+  showSecret({
+    kind: 'token',
+    title,
+    token,
+    subtitle: (
+      <span>
+        <span className="font-mono">{label}</span> in {w.name}. This agent presents it together with its agent ID + agent token and <span className="font-mono">X-Dispatch-Workspace-Id: {w.id}</span>.
+      </span>
+    ),
+    note: note ?? <Link to={`/workspaces/${w.id}/connect?agent=${agentId}`}>Open connection instructions →</Link>,
+  })
 }
 
 function AddMemberModal({ open, onClose, onToken }: { open: boolean; onClose: () => void; onToken: (t: string, agentId: string) => void }) {

@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { audienceLabel, filteredReason, targets } from '../lib/access'
 import { ago, clock, maskHookPassword, plural, until } from '../lib/format'
-import { actions, agentById, canPost, isExpired, isOnline, orgEvents, principalName, receiptState, useDB, useNow, type ReceiptState } from '../lib/store'
+import { actions, agentById, canAdmin, canPost, isExpired, isOnline, orgEvents, principalName, receiptState, useDB, useNow, type ReceiptState } from '../lib/store'
 import type { Audience, FireTrigger, Message, Workspace } from '../lib/types'
-import { CopyChip, KeyholeIcon, SECRET_LINE, SecretField } from './credential'
-import { LogRow, PrincipalChip, Tag } from './shared'
-import { Button, Callout, Checkbox, Field, Footer, Input, Modal, Pill, Segmented, Select, SlideOver, Textarea, Toggle, cx } from './ui'
+import { CopyChip, SECRET_LINE, SecretField } from './credential'
+import { showSecret } from '../lib/secrets'
+import { ImpactDialog, LogRow, PrincipalChip, Tag } from './shared'
+import { Button, Callout, Checkbox, Field, Footer, Input, Pill, Segmented, Select, SlideOver, Textarea, Toggle, cx } from './ui'
 
 /* ------------------------------------------------------------------ */
 /* Receipts — tracked per agent                                        */
@@ -226,7 +227,6 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
   const [authUser, setAuthUser] = useState('dispatch')
   const [pwLen, setPwLen] = useState(0)
   const [nonce, setNonce] = useState(0)
-  const [issued, setIssued] = useState<{ url: string; user: string; password: string } | null>(null)
   const allTags = useMemo(() => Array.from(new Set(d.messages.filter((m) => m.wsId === ws.id).flatMap((m) => m.tags))).sort(), [d.messages, ws.id])
 
   const preview = useMemo(() => {
@@ -254,7 +254,7 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
       parentId: parent?.id,
       webhook: hookOn ? (hookMode === 'fire' ? { mode: 'fire', url, trigger, authUser, authSet: pwLen > 0 } : { mode: 'listen', authUser }) : undefined,
     })
-    if (res.hookPassword && res.listenUrl) setIssued({ url: res.listenUrl, user: authUser, password: res.hookPassword })
+    if (res.hookPassword && res.listenUrl) showSecret({ kind: 'listener', title: 'Listener created', url: res.listenUrl, user: authUser, password: res.hookPassword })
     setBody('')
     setPayload('')
     setShowPayload(false)
@@ -266,39 +266,6 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
     if (compact) setOpen(false)
   }
 
-  const credential = (
-  <Modal open={!!issued} onClose={() => {}} width={560} dismissable={false}>
-    {issued && (
-      <>
-        <div className="flex items-center gap-2.5">
-          <KeyholeIcon state="closed" size={18} turn />
-          <div className="text-[15px] font-semibold">Listener created</div>
-        </div>
-        <div className="text-sm2 text-zinc-400">Give these to the outside system. Calls are appended to the message until it expires.</div>
-        <div className="flex flex-col gap-3 rounded-[10px] border border-brass/35 bg-brass/[0.06] p-5">
-          <Field label="URL">
-            <CopyChip variant="block" value={issued.url} />
-          </Field>
-          <Field label="User">
-            <CopyChip variant="block" value={issued.user} />
-          </Field>
-          <div>
-            <div className="text-2xs font-semibold tracking-[0.08em] text-brass uppercase">Password — shown once</div>
-            <div className="mt-2 font-mono text-base tracking-[0.06em] break-all text-brass-pale select-all">{issued.password}</div>
-            <div className="mt-2">
-              <CopyChip variant="block" value={issued.password} display="Copy password" />
-            </div>
-          </div>
-          <div className="text-center text-xs text-brass">Store this now — it won't be shown again.</div>
-        </div>
-        <Button className="w-full py-2.5" onClick={() => setIssued(null)}>
-          I've stored it
-        </Button>
-      </>
-    )}
-  </Modal>
-  )
-
   if (!allowed) return <Callout tone="neutral">You can read and search this workspace, but your membership doesn’t include writing.</Callout>
   if (!open)
     return (
@@ -306,7 +273,6 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
         <button type="button" onClick={() => setOpen(true)} className="w-full rounded-[10px] border border-edge bg-panel px-4 py-3 text-left text-[13px] text-zinc-500 hover:border-zinc-700 hover:text-zinc-300">
           Write to {ws.name}…
         </button>
-        {credential}
       </>
     )
 
@@ -422,7 +388,6 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
           </Button>
         </div>
       </div>
-      {credential}
     </div>
   )
 }
@@ -435,6 +400,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
   const now = useNow(5000)
   const m = d.messages.find((x) => x.id === msgId)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [rotating, setRotating] = useState(false)
   useEffect(() => setExpanded(null), [msgId])
   if (!m) return null
   const thread = d.messages.filter((x) => x.parentId === m.id).sort((a, b) => a.createdAt - b.createdAt)
@@ -594,9 +560,32 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                   Simulate a wrong password
                 </Button>
                 <span className="self-center text-2xs text-zinc-600">Prototype: stands in for the outside system.</span>
+                {!expired && (canAdmin(d, ws) || (m.author.kind === 'human' && m.author.id === d.currentUserId && canPost(d, ws))) && (
+                  <Button size="sm" className="ml-auto" onClick={() => setRotating(true)}>
+                    Rotate password
+                  </Button>
+                )}
               </>
             )}
           </div>
+          {hook.mode === 'listen' && (
+            <ImpactDialog
+              open={rotating}
+              onClose={() => setRotating(false)}
+              title="Rotate the listener password?"
+              rows={[
+                ['Listener', <span className="font-mono">{hook.url.split('/').pop()}</span>],
+                ['Current password', `${maskHookPassword(hook.passwordLast4)} — stops working now`, 'amber'],
+                ['Open until', m.expiresAt ? new Date(m.expiresAt).toLocaleString() : '—'],
+              ]}
+              body="The new password is shown once. Until the outside system has it, its calls get 401 and nothing is appended."
+              confirmLabel="Rotate password"
+              onConfirm={() => {
+                const pw = actions.rotateListenerPassword(m.id)
+                if (pw) showSecret({ kind: 'listener', title: 'Listener password rotated', subtitle: 'Same URL and user. Give the new password to the outside system.', url: hook.url, user: hook.authUser, password: pw })
+              }}
+            />
+          )}
         </section>
       )}
 
