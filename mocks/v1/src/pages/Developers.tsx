@@ -70,9 +70,9 @@ const defaultBody = (e: Endpoint) => DEFAULT_BODY[e.id] ?? (e.request ? JSON.str
 const maskTyped = (t: string, prefix: string) => (!t.trim() ? '(missing)' : t.startsWith(prefix) ? `${prefix}••••${t.trim().slice(-4)}` : `••••${t.trim().slice(-4)}`)
 
 /** A pasted token: masked, brass (a credential is near), never echoed back in full. */
-function TokenInput({ label, value, onChange, issued, placeholder }: { label: string; value: string; onChange: (v: string) => void; issued: string | null; placeholder: string }) {
+function TokenInput({ label, value, onChange, issued, placeholder, hint }: { label: string; value: string; onChange: (v: string) => void; issued: string | null; placeholder: string; hint: string }) {
   return (
-    <Field label={label} hint={issued ? undefined : 'Prototype: only a token issued in this browser tab can be verified. Rotate it (with the grace window) to get one.'}>
+    <Field label={label} hint={issued ? undefined : hint}>
       <div className="flex items-center gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-brass/25 bg-secret-bg px-3 py-2 focus-within:border-brass/50">
           <input type="password" aria-label={label} autoComplete="off" spellCheck={false} data-1p-ignore data-lpignore="true" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="masked min-w-0 flex-1 bg-transparent font-mono text-xs text-brass outline-none placeholder:font-sans placeholder:tracking-normal placeholder:text-zinc-600" />
@@ -172,8 +172,8 @@ function TryIt() {
           </Select>
         </Field>
       </div>
-      <TokenInput label="Agent token" value={agentToken} onChange={setAgentToken} issued={issuedAgent} placeholder="Paste dsp_agent_…" />
-      {needsWs && <TokenInput label={`Workspace token · ${w?.name ?? wsId}`} value={wsToken} onChange={setWsToken} issued={issuedWs} placeholder="Paste dsp_ws_…" />}
+      <TokenInput label="Agent token" value={agentToken} onChange={setAgentToken} issued={issuedAgent} placeholder="Paste dsp_agent_…" hint="Prototype: only a token issued in this browser tab can be verified. Rotate it on the agent’s page — the old one keeps working 10 minutes." />
+      {needsWs && <TokenInput label={`Workspace token · ${w?.name ?? wsId}`} value={wsToken} onChange={setWsToken} issued={issuedWs} placeholder="Paste dsp_ws_…" hint="Same rule: rotate it from the workspace’s Members › ⋯ or its Connect tab." />}
       <Field label="Endpoint">
         <Select
           mono

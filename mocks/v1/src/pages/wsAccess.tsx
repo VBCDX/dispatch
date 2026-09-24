@@ -575,7 +575,9 @@ export function WsConnect() {
         </div>
         <div className="grid grid-cols-[170px_1fr_auto] items-center gap-x-4 gap-y-2 rounded-[10px] border border-edge bg-panel p-4 text-sm2">
           <span className="text-zinc-500">Agent ID</span>
-          <CopyChip value={a.id} variant="inline" />
+          <span>
+            <CopyChip value={a.id} variant="inline" />
+          </span>
           <span />
           <span className="text-zinc-500">Agent token</span>
           <span>
@@ -590,7 +592,9 @@ export function WsConnect() {
             <span />
           )}
           <span className="text-zinc-500">Workspace ID</span>
-          <CopyChip value={w.id} variant="inline" />
+          <span>
+            <CopyChip value={w.id} variant="inline" />
+          </span>
           <span />
           <span className="text-zinc-500">Workspace token</span>
           <span>
