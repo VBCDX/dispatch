@@ -32,7 +32,7 @@ export function ListBody({ cols, what, children, empty, rows = 3 }: { cols: stri
 /* ------------------------------------------------------------------ */
 /* Impact preview                                                      */
 /* ------------------------------------------------------------------ */
-export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, onConfirm, typeToConfirm }: { open: boolean; onClose: () => void; title: ReactNode; rows: [string, ReactNode, ('amber' | 'red')?][]; body?: ReactNode; confirmLabel: string; onConfirm: () => void; typeToConfirm?: string }) {
+export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, onConfirm, typeToConfirm, confirmVariant = 'danger' }: { open: boolean; onClose: () => void; title: ReactNode; rows: [string, ReactNode, ('amber' | 'red')?][]; body?: ReactNode; confirmLabel: string; onConfirm: () => void; typeToConfirm?: string; confirmVariant?: 'danger' | 'primary' }) {
   const [typed, setTyped] = useState('')
   useEffect(() => {
     if (open) setTyped('')
@@ -59,7 +59,7 @@ export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, o
         </Button>
         <Button
           size="lg"
-          variant="danger"
+          variant={confirmVariant}
           disabled={!!typeToConfirm && typed !== typeToConfirm}
           onClick={() => {
             onConfirm()

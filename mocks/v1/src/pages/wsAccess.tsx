@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { evaluate, type Op } from '../lib/access'
-import { ago, maskAgentToken, maskWsToken, plural } from '../lib/format'
-import { actions, agentById, canAdmin, getDB, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
+import { ago, clock, maskAgentToken, maskWsToken, plural } from '../lib/format'
+import { actions, agentById, canAdmin, getDB, isExpired, me, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
 import type { Harness, Membership, MemberRole, Principal } from '../lib/types'
 import { CopyChip, DispatchMark, KeyholeIcon } from '../components/credential'
 import { showSecret } from '../lib/secrets'
@@ -15,16 +15,21 @@ import { useWorkspace } from './workspaces'
 /* ------------------------------------------------------------------ */
 const M_COLS = '1.6fr 1.1fr 60px 60px 1.2fr 1.6fr 36px'
 
+type Pending = { kind: 'delegate' | 'demote' | 'rotate' | 'remove'; m: Membership }
+
 export function WsMembers() {
   const d = useDB()
   const w = useWorkspace()
   const now = useNow()
   const admin = canAdmin(d, w)
   const [adding, setAdding] = useState(false)
-  const [removing, setRemoving] = useState<Membership | null>(null)
+  const [pending, setPending] = useState<Pending | null>(null)
   const sorted = [...w.members].sort((a, b) => (a.kind === b.kind ? (a.role === b.role ? 0 : a.role === 'admin' ? -1 : 1) : a.kind === 'human' ? -1 : 1))
   const p = (m: Membership): Principal => ({ kind: m.kind, id: m.id })
   const admins = w.members.filter((m) => m.role === 'admin')
+  const humanAdmins = admins.filter((m) => m.kind === 'human')
+  const orgAdmins = orgHumans(d).filter((h) => ['Owner', 'orgAdmin'].includes(h.roles[d.currentOrgId]))
+  const isOrgAdminHuman = (m: Membership) => m.kind === 'human' && ['Owner', 'orgAdmin'].includes(humanById(d, m.id)?.roles[d.currentOrgId] ?? '')
 
   return (
     <div className="mt-5">
@@ -38,6 +43,11 @@ export function WsMembers() {
           </Button>
         )}
       </div>
+      {admins.length > 0 && !humanAdmins.length && (
+        <Callout tone="amber" className="mt-4">
+          No human admins here — only {admins.map((m) => principalName(d, p(m))).join(', ')} administer{admins.length === 1 ? 's' : ''} {w.name}, over the API and MCP. Org admins ({orgAdmins.map((h) => h.name).join(', ')}) can still step in.
+        </Callout>
+      )}
       <Table cols={M_COLS} head={['Member', 'Role', 'Read', 'Write', 'Workspace token', 'Effective access', '']} className="mt-4">
         {sorted.map((m) => {
           const a = m.kind === 'agent' ? agentById(d, m.id) : null
@@ -45,6 +55,8 @@ export function WsMembers() {
           const r = a ? evaluate(d, a.id, w.id, 'read') : null
           const wr = a ? evaluate(d, a.id, w.id, 'write') : null
           const lastAdmin = m.role === 'admin' && admins.length === 1
+          const orgAdminHuman = isOrgAdminHuman(m)
+          const grace = m.prevTokenLast4 && m.prevTokenUntil && m.prevTokenUntil > now
           return (
             <Row key={m.kind + m.id} cols={M_COLS}>
               <div className="min-w-0">
@@ -60,13 +72,17 @@ export function WsMembers() {
               <div>
                 {m.kind === 'human' ? <span className="text-2xs text-zinc-500" title="Humans in a workspace always see every message">Always</span> : <Toggle on={m.read} disabled={!admin} label={`Read for ${principalName(d, p(m))}`} onChange={(v) => actions.setMember(w.id, p(m), { read: v })} />}
               </div>
-              <div>
-                <Toggle on={m.write} disabled={!admin} label={`Write for ${principalName(d, p(m))}`} onChange={(v) => actions.setMember(w.id, p(m), { write: v })} />
+              <div title={orgAdminHuman ? `${humanById(d, m.id)?.roles[d.currentOrgId]}: org admins can always write in every workspace` : undefined}>
+                <Toggle on={m.write || orgAdminHuman} disabled={!admin || orgAdminHuman} label={`Write for ${principalName(d, p(m))}`} onChange={(v) => actions.setMember(w.id, p(m), { write: v })} />
+                {orgAdminHuman && <div className="mt-0.5 text-2xs text-zinc-600">org admin</div>}
               </div>
-              <div className="masked-token text-xs text-zinc-400">{m.kind === 'agent' ? maskWsToken(m.tokenLast4 ?? '????') : <span className="font-sans tracking-normal text-zinc-600">Signs in with SSO</span>}</div>
+              <div className="masked-token text-xs text-zinc-400">
+                {m.kind === 'agent' ? maskWsToken(m.tokenLast4 ?? '????') : <span className="font-sans tracking-normal text-zinc-600">Signs in with SSO</span>}
+                {grace && <div className="font-sans text-2xs tracking-normal text-amber-400">old ••••{m.prevTokenLast4} works until {clock(m.prevTokenUntil!)}</div>}
+              </div>
               <div className="text-xs">
                 {m.kind === 'human' ? (
-                  <span className="text-zinc-400">Sees, searches and posts to every message{!m.write && ' (read-only)'}</span>
+                  <span className="text-zinc-400">Sees, searches and posts to every message{orgAdminHuman ? ' (org admin)' : !m.write && ' (read-only)'}</span>
                 ) : r?.allowed ? (
                   <span className="text-green-400">
                     Read ✓ {wr?.allowed ? 'Write ✓' : <span className="text-zinc-500">Write ✗</span>}
@@ -82,12 +98,13 @@ export function WsMembers() {
               <div className="text-right">
                 {admin && (
                   <Menu
+                    label={`Actions for ${principalName(d, p(m))}`}
                     items={[
                       m.role === 'admin'
-                        ? { label: 'Remove admin', disabled: lastAdmin, onClick: () => actions.setMember(w.id, p(m), { role: 'member' }) }
-                        : { label: `Delegate admin to this ${m.kind}`, onClick: () => actions.setMember(w.id, p(m), { role: 'admin' }) },
-                      m.kind === 'agent' ? { label: 'Rotate workspace token', onClick: () => showWsToken(w, m.id, actions.rotateMemberToken(w.id, m.id), 'Workspace token rotated') } : null,
-                      { label: 'Remove from workspace', danger: true, disabled: lastAdmin, onClick: () => setRemoving(m) },
+                        ? { label: 'Remove admin', disabled: lastAdmin, hint: lastAdmin ? 'The only admin here' : undefined, onClick: () => setPending({ kind: 'demote', m }) }
+                        : { label: `Delegate admin to this ${m.kind}`, onClick: () => setPending({ kind: 'delegate', m }) },
+                      m.kind === 'agent' ? { label: 'Rotate workspace token', onClick: () => setPending({ kind: 'rotate', m }) } : null,
+                      { label: 'Remove from workspace', danger: true, disabled: lastAdmin, hint: lastAdmin ? 'The only admin here' : undefined, onClick: () => setPending({ kind: 'remove', m }) },
                     ]}
                   />
                 )}
@@ -99,26 +116,101 @@ export function WsMembers() {
       {admins.length === 1 && <div className="mt-2 text-xs text-zinc-500">A workspace always keeps at least one admin.</div>}
 
       <AddMemberModal open={adding} onClose={() => setAdding(false)} onToken={(t, agentId) => showWsToken(w, agentId, t, 'Agent added')} />
-      <ImpactDialog
-        open={!!removing}
-        onClose={() => setRemoving(null)}
-        title={`Remove ${removing ? principalName(d, { kind: removing.kind, id: removing.id }) : ''} from ${w.name}?`}
-        rows={
-          removing
-            ? [
-                ['Kind', removing.kind],
-                ['Role', removing.role + (removing.delegatedBy ? ` (delegated by ${removing.delegatedBy})` : '')],
-                ['Messages waiting for it', removing.kind === 'agent' ? String(d.messages.filter((m) => m.wsId === w.id && m.receipts[removing.id] && !m.receipts[removing.id].ackAt && !m.receipts[removing.id].filtered).length) : '—'],
-                ['Workspace token', removing.kind === 'agent' ? `${maskWsToken(removing.tokenLast4 ?? '')} — stops working immediately` : '—', removing.kind === 'agent' ? 'amber' : undefined],
-              ]
-            : []
-        }
-        body="Its past messages and receipts stay in the workspace and the audit log."
-        confirmLabel="Remove member"
-        onConfirm={() => removing && actions.removeMember(w.id, { kind: removing.kind, id: removing.id })}
-      />
+      <MemberConfirm pending={pending} onClose={() => setPending(null)} />
     </div>
   )
+}
+
+/** Impact previews for the member ⋯ menu: delegation, removing admin, rotation and removal. */
+function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose: () => void }) {
+  const d = useDB()
+  const w = useWorkspace()
+  const now = useNow()
+  const m = pending?.m
+  const name = m ? principalName(d, { kind: m.kind, id: m.id }) : ''
+  const orgAdmins = orgHumans(d).filter((h) => ['Owner', 'orgAdmin'].includes(h.roles[d.currentOrgId]))
+  // Would this leave only agents administering the workspace? Allowed, but said out loud (and flagged in Audit).
+  const losesLastHuman = !!m && m.kind === 'human' && m.role === 'admin' && (pending?.kind === 'demote' || pending?.kind === 'remove') && !w.members.some((x) => x !== m && x.kind === 'human' && x.role === 'admin')
+  const agentAdmins = w.members.filter((x) => x !== m && x.role === 'admin').map((x) => principalName(d, { kind: x.kind, id: x.id }))
+  const noHumanWarning = losesLastHuman && (
+    <Callout tone="amber">
+      {agentAdmins.join(', ')} will be the only admin{agentAdmins.length === 1 ? '' : 's'} of {w.name} — agent{agentAdmins.length === 1 ? '' : 's'} acting over the API and MCP. Org admins ({orgAdmins.map((h) => h.name).join(', ')}) can still step in. This is flagged in the audit log.
+    </Callout>
+  )
+  const self = m?.kind === 'human' && m.id === d.currentUserId
+  const waiting = m?.kind === 'agent' ? d.messages.filter((x) => x.wsId === w.id && x.receipts[m.id] && !x.receipts[m.id].ackAt && !x.receipts[m.id].filtered && !isExpired(x, now)).length : 0
+  const p = m ? ({ kind: m.kind, id: m.id } as Principal) : null
+
+  const spec: { title: string; rows: [string, ReactNode, ('amber' | 'red')?][]; body: ReactNode; confirm: string; tone: 'danger' | 'primary'; run: () => void } | null =
+    !pending || !m || !p
+      ? null
+      : pending.kind === 'delegate'
+        ? {
+            title: `Delegate admin on ${w.name} to ${name}?`,
+            rows: [
+              ['Kind', m.kind],
+              ['Can then', 'Add and remove members, delegate or remove admin, set the blocklist, rotate workspace tokens, expire any message, rotate listener passwords, read the audit log, change settings', 'amber'],
+              ['Through', m.kind === 'agent' ? 'The REST API and MCP, with its own agent + workspace tokens' : 'The web app'],
+              ['Audited as', m.kind === 'agent' ? `“${name} … — as delegated admin” (agent actions)` : `${name}’s own actions`],
+            ],
+            body: m.kind === 'agent' ? `${name} acts on its own, without a human in the loop. You can remove admin again from this menu.` : 'You can remove admin again from this menu.',
+            confirm: 'Delegate admin',
+            tone: 'primary',
+            run: () => actions.setMember(w.id, p, { role: 'admin' }),
+          }
+        : pending.kind === 'demote'
+          ? {
+              title: `Remove admin from ${self ? 'yourself' : name}?`,
+              rows: [
+                ['Kind', m.kind],
+                ['Role after', 'member — keeps its read and write access'],
+                ['Admins left', agentAdmins.join(', ') || '—', losesLastHuman ? 'amber' : undefined],
+              ],
+              body: (
+                <div className="flex flex-col gap-2.5">
+                  {self && <div>{['Owner', 'orgAdmin'].includes(me(d).roles[d.currentOrgId]) ? 'You keep admin here through your org role.' : 'You lose admin here as soon as you confirm.'}</div>}
+                  {noHumanWarning}
+                </div>
+              ),
+              confirm: 'Remove admin',
+              tone: 'danger',
+              run: () => actions.setMember(w.id, p, { role: 'member' }),
+            }
+          : pending.kind === 'rotate'
+            ? {
+                title: `Rotate ${name}’s workspace token?`,
+                rows: [
+                  ['Current token', `${maskWsToken(m.tokenLast4 ?? '')} — keeps working for 10 minutes`, 'amber'],
+                  ['Other agents', 'Unaffected — each has its own token'],
+                  ['Agent token', 'Unchanged'],
+                ],
+                body: 'The new token is shown once. Put it in the agent’s config within 10 minutes; after that the old one is refused.',
+                confirm: 'Rotate token',
+                tone: 'danger',
+                run: () => {
+                  const t = actions.rotateMemberToken(w.id, m.id)
+                  if (t) showWsToken(w, m.id, t, 'Workspace token rotated', <>The old token works until {clock(Date.now() + 10 * 60_000)}. <Link to={`/workspaces/${w.id}/connect?agent=${m.id}`}>Open connection instructions →</Link></>)
+                },
+              }
+            : {
+                title: `Remove ${name} from ${w.name}?`,
+                rows: [
+                  ['Kind', m.kind],
+                  ['Role', m.role + (m.delegatedBy ? ` (delegated by ${m.delegatedBy})` : '')],
+                  ['Messages waiting for it', m.kind === 'agent' ? `${waiting}${waiting ? ' — filtered, never delivered' : ''}` : '—', waiting ? 'amber' : undefined],
+                  ['Workspace token', m.kind === 'agent' ? `${maskWsToken(m.tokenLast4 ?? '')} — stops working immediately` : '—', m.kind === 'agent' ? 'amber' : undefined],
+                ],
+                body: (
+                  <div className="flex flex-col gap-2.5">
+                    <div>Its past messages and receipts stay in the workspace and the audit log.</div>
+                    {noHumanWarning}
+                  </div>
+                ),
+                confirm: 'Remove member',
+                tone: 'danger',
+                run: () => actions.removeMember(w.id, p),
+              }
+  return <ImpactDialog open={!!spec} onClose={onClose} title={spec?.title ?? ''} rows={spec?.rows ?? []} body={spec?.body} confirmLabel={spec?.confirm ?? ''} confirmVariant={spec?.tone} onConfirm={() => spec?.run()} />
 }
 
 /** Hands a freshly issued workspace token to the root secret host. */
@@ -244,6 +336,11 @@ export function WsAccess() {
   const narrowed = memberAgents.filter((a) => !a.filters.read || !a.filters.write)
   const authorBlocks = memberAgents.filter((a) => a.filters.agentBlocklist.length)
   const firstFail = res?.steps.findIndex((s) => !s.pass) ?? -1
+  const [pick, setPick] = useState('')
+  const [confirmBlock, setConfirmBlock] = useState<string | null>(null)
+  const blockee = confirmBlock ? agentById(d, confirmBlock) : undefined
+  const blockeeMember = confirmBlock ? w.members.find((m) => m.kind === 'agent' && m.id === confirmBlock) : undefined
+  const blockeePending = confirmBlock ? d.messages.filter((m) => m.wsId === w.id && !isExpired(m) && m.receipts[confirmBlock] && !m.receipts[confirmBlock].filtered && !m.receipts[confirmBlock].ackAt) : []
 
   return (
     <div className="mt-5 grid grid-cols-2 gap-5">
@@ -265,17 +362,40 @@ export function WsAccess() {
           {!w.agentBlocklist.length && <span className="text-sm2 text-zinc-500">No agents blocked.</span>}
         </div>
         {admin && (
-          <select aria-label="Block an agent" value="" onChange={(e) => e.target.value && actions.setWsBlocklist(w.id, [...w.agentBlocklist, e.target.value])} className="mt-3 rounded-md border border-edge bg-page px-2.5 py-1.5 text-xs text-zinc-400 outline-none">
-            <option value="">+ Block an agent by ID…</option>
-            {agents
-              .filter((a) => !w.agentBlocklist.includes(a.id))
-              .map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.label} · {a.id}
-                </option>
-              ))}
-          </select>
+          <div className="mt-3 flex items-center gap-2">
+            <select aria-label="Block an agent" value={pick} onChange={(e) => setPick(e.target.value)} className="rounded-md border border-edge bg-page px-2.5 py-1.5 text-xs text-zinc-400 outline-none">
+              <option value="">Choose an agent to block…</option>
+              {agents
+                .filter((a) => !w.agentBlocklist.includes(a.id))
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label} · {a.id}
+                  </option>
+                ))}
+            </select>
+            <Button size="sm" disabled={!pick} onClick={() => setConfirmBlock(pick)}>
+              Block…
+            </Button>
+          </div>
         )}
+        <ImpactDialog
+          open={!!confirmBlock}
+          onClose={() => setConfirmBlock(null)}
+          title={`Block ${blockee?.label ?? ''} in ${w.name}?`}
+          rows={[
+            ['Membership', blockeeMember ? `${blockeeMember.role}${blockeeMember.role === 'admin' ? ' — loses admin here while blocked' : ''}` : 'Not a member', blockeeMember?.role === 'admin' ? 'red' : undefined],
+            ['Workspace token', blockeeMember ? `${maskWsToken(blockeeMember.tokenLast4 ?? '')} — refused from now on (stays valid, the block wins)` : '—', blockeeMember ? 'amber' : undefined],
+            ['Messages pending for it', `${blockeePending.length}${blockeePending.length ? ' — filtered now, never delivered' : ''}`, blockeePending.length ? 'amber' : undefined],
+            ['Connected', blockee && isOnline(blockee) ? 'Yes — its next request is refused' : 'No'],
+          ]}
+          body="Every refused attempt is logged with the rule. Unblocking later doesn't bring back the messages filtered now."
+          confirmLabel="Block agent"
+          onConfirm={() => {
+            if (!confirmBlock) return
+            actions.setWsBlocklist(w.id, [...w.agentBlocklist, confirmBlock])
+            setPick('')
+          }}
+        />
         <div className="mt-6 text-md font-semibold">Agent-side filters that touch this workspace</div>
         <div className="mt-1 text-xs2 text-zinc-500">Agents can narrow themselves. Their filters beat anything this workspace grants.</div>
         <ul className="mt-3 mb-0 flex list-none flex-col gap-2 pl-0 text-xs">

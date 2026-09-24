@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { audienceLabel, filteredReason, targets } from '../lib/access'
 import { ago, clock, maskHookPassword, plural, until } from '../lib/format'
-import { actions, agentById, canAdmin, canPost, fireState, isExpired, MAX_ATTEMPTS, isOnline, orgEvents, principalName, receiptState, useDB, useNow, type ReceiptState } from '../lib/store'
+import { actions, agentById, canAdmin, canPost, fireState, isExpired, MAX_ATTEMPTS, mayExpire, isOnline, orgEvents, principalName, receiptState, useDB, useNow, type ReceiptState } from '../lib/store'
 import type { Audience, FireTrigger, Message, Workspace } from '../lib/types'
 import { CopyChip, SECRET_LINE, SecretField } from './credential'
 import { showSecret } from '../lib/secrets'
@@ -436,6 +436,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
   const m = d.messages.find((x) => x.id === msgId)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [rotating, setRotating] = useState(false)
+  const [expiring, setExpiring] = useState(false)
   useEffect(() => setExpanded(null), [msgId])
   if (!m) return null
   const thread = d.messages.filter((x) => x.parentId === m.id).sort((a, b) => a.createdAt - b.createdAt)
@@ -464,8 +465,8 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
           <Tag key={t} t={t} />
         ))}
         <span className={cx('text-xs', expired ? 'text-zinc-500' : 'text-zinc-400')}>{m.expiresAt ? (expired ? `Expired ${ago(m.expiresAt, now).toLowerCase()}` : `Expires ${until(m.expiresAt, now).toLowerCase()} · ${new Date(m.expiresAt).toLocaleString()}`) : 'No expiry'}</span>
-        {!expired && m.expiresAt && (
-          <button type="button" className="text-xs text-zinc-500 hover:text-red-400" onClick={() => actions.expireNow(m.id)}>
+        {!expired && mayExpire(d, m) && (
+          <button type="button" className="text-xs text-zinc-500 hover:text-red-400" onClick={() => setExpiring(true)}>
             Expire now
           </button>
         )}
@@ -473,6 +474,21 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
           <CopyChip value={m.trk} />
         </span>
       </div>
+
+      <ImpactDialog
+        open={expiring}
+        onClose={() => setExpiring(false)}
+        title={`Expire ${m.id} now?`}
+        rows={[
+          ['Author', principalName(d, m.author) + (m.author.kind === 'human' && m.author.id === d.currentUserId ? ' (you)' : '')],
+          ['Not delivered yet', `${Object.values(m.receipts).filter((r) => !r.filtered && !r.deliveredAt).length} — never will be`, Object.values(m.receipts).some((r) => !r.filtered && !r.deliveredAt) ? 'amber' : undefined],
+          ['Webhook', !hook ? 'None' : hook.mode === 'listen' ? 'Listener closes — further calls get 410' : fire?.short === 'waiting' || fire?.short === 'retrying' ? 'Won’t fire' : 'Unaffected', hook && (hook.mode === 'listen' || fire?.short === 'waiting' || fire?.short === 'retrying') ? 'amber' : undefined],
+          ['Was due to expire', m.expiresAt ? new Date(m.expiresAt).toLocaleString() : 'Never'],
+        ]}
+        body="This can’t be undone. The message stays readable and searchable, and in the audit log."
+        confirmLabel="Expire now"
+        onConfirm={() => actions.expireNow(m.id)}
+      />
 
       <section>
         <div className="eyebrow">Receipts · per agent</div>
@@ -594,7 +610,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
             )}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
-            {fire && (fire.short === 'retrying' || fire.short === 'gave up') && (
+            {fire && (fire.short === 'retrying' || fire.short === 'gave up') && canPost(d, ws) && (
               <Button size="sm" onClick={() => actions.retryWebhook(m.id)}>
                 Retry now
               </Button>

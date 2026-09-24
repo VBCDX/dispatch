@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
-import { actions, agentById, emailTaken, isOnline, isOrgAdmin, labelTaken, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
+import { actions, agentById, emailTaken, isExpired, isOnline, isOrgAdmin, labelTaken, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
 import type { Agent, AgentFilters, Harness, OrgRole } from '../lib/types'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
@@ -145,6 +145,8 @@ export function AgentDetail() {
   const { agentId } = useParams()
   const a = agentById(d, agentId)
   const [revoking, setRevoking] = useState(false)
+  const [suspending, setSuspending] = useState(false)
+  const [rotating, setRotating] = useState(false)
   const [f, setF] = useState<AgentFilters | null>(a?.filters ?? null)
   useEffect(() => setF(a?.filters ?? null), [a?.id]) // eslint-disable-line
   if (!a || !f) return <div className="text-sm text-zinc-400">No such agent. <Link to="/agents">Back to agents</Link></div>
@@ -154,6 +156,7 @@ export function AgentDetail() {
   const inbox = d.messages.filter((m) => m.receipts[a.id]).sort((x, y) => y.createdAt - x.createdAt).slice(0, 12)
   const dirty = JSON.stringify(f) !== JSON.stringify(a.filters)
   const others = orgAgents(d).filter((x) => x.id !== a.id)
+  const pendingFor = d.messages.filter((m) => m.receipts[a.id] && !m.receipts[a.id].ackAt && !m.receipts[a.id].filtered && !isExpired(m, now)).length
 
   return (
     <div className="max-w-[1120px]">
@@ -165,8 +168,8 @@ export function AgentDetail() {
           a.status !== 'revoked' && (
             <>
               {a.status === 'active' && <Button onClick={() => actions.connectAgent(a.id, !a.connected)}>{a.connected ? 'Simulate disconnect' : 'Simulate connect'}</Button>}
-              <Button onClick={() => showAgentToken(a, actions.rotateAgentToken(a.id))}>Rotate token</Button>
-              <Button onClick={() => actions.setAgentStatus(a.id, a.status === 'suspended' ? 'active' : 'suspended')}>{a.status === 'suspended' ? 'Resume' : 'Suspend'}</Button>
+              <Button onClick={() => setRotating(true)}>Rotate token</Button>
+              <Button onClick={() => (a.status === 'suspended' ? actions.setAgentStatus(a.id, 'active') : setSuspending(true))}>{a.status === 'suspended' ? 'Resume' : 'Suspend'}</Button>
               <Button variant="danger" onClick={() => setRevoking(true)}>
                 Revoke
               </Button>
@@ -279,6 +282,36 @@ export function AgentDetail() {
       <AuditLog events={orgEvents(d).filter((e) => e.actorId === a.id || e.object.includes(a.label) || e.object.includes(a.id))} />
 
       <ImpactDialog
+        open={rotating}
+        onClose={() => setRotating(false)}
+        title={`Rotate ${a.label}’s agent token?`}
+        rows={[
+          ['Current token', `${maskAgentToken(a.tokenLast4)} — keeps working for 10 minutes`, 'amber'],
+          ['Workspace tokens', 'Unchanged'],
+          ['Connected now', isOnline(a) ? 'Yes — update its config within 10 minutes' : 'No'],
+        ]}
+        body="The new token is shown once."
+        confirmLabel="Rotate token"
+        onConfirm={() => {
+          const t = actions.rotateAgentToken(a.id)
+          if (t) showAgentToken(a, t)
+        }}
+      />
+      <ImpactDialog
+        open={suspending}
+        onClose={() => setSuspending(false)}
+        title={`Suspend ${a.label}?`}
+        rows={[
+          ['Connected now', isOnline(a) ? 'Yes — disconnected now' : 'No', isOnline(a) ? 'amber' : undefined],
+          ['Workspaces', memberships.map((w) => w.name).join(', ') || 'None'],
+          ['Admin in', memberships.filter((w) => w.members.some((m) => m.id === a.id && m.role === 'admin')).map((w) => w.name).join(', ') || 'None', memberships.some((w) => w.members.some((m) => m.id === a.id && m.role === 'admin')) ? 'amber' : undefined],
+          ['Messages pending for it', `${pendingFor} — filtered now, never delivered`, pendingFor ? 'amber' : undefined],
+        ]}
+        body="Its tokens stay valid but every request is refused until you resume it. Messages filtered now aren't re-delivered on resume."
+        confirmLabel="Suspend agent"
+        onConfirm={() => actions.setAgentStatus(a.id, 'suspended')}
+      />
+      <ImpactDialog
         open={revoking}
         onClose={() => setRevoking(false)}
         title={`Revoke ${a.label}?`}
@@ -286,7 +319,7 @@ export function AgentDetail() {
           ['Last seen', ago(a.lastSeen, now), a.lastSeen && now - a.lastSeen < 3_600_000 ? 'amber' : undefined],
           ['Workspaces', memberships.map((w) => w.name).join(', ') || 'None'],
           ['Admin in', memberships.filter((w) => w.members.some((m) => m.id === a.id && m.role === 'admin')).map((w) => w.name).join(', ') || 'None'],
-          ['Messages waiting for it', String(d.messages.filter((m) => m.receipts[a.id] && !m.receipts[a.id].ackAt && !m.receipts[a.id].filtered).length)],
+          ['Messages pending for it', `${pendingFor}${pendingFor ? ' — filtered now, never delivered' : ''}`, pendingFor ? 'amber' : undefined],
         ]}
         body="Its agent token and every workspace token stop working now. Its next request is refused and logged. This can’t be undone."
         confirmLabel="Revoke agent"

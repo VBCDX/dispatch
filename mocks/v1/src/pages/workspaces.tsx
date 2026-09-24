@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ago, plural, until } from '../lib/format'
-import { actions, agentById, canAdmin, isExpired, MAX_ATTEMPTS, isOnline, myMembership, myWorkspaces, orgEvents, useDB, useNow, wsById } from '../lib/store'
+import { actions, agentById, canAdmin, canPost, isExpired, MAX_ATTEMPTS, isOnline, myMembership, myWorkspaces, orgEvents, useDB, useNow, wsById } from '../lib/store'
 import type { Message } from '../lib/types'
 import { Composer, MessageCard, MessageDrawer, fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, ImpactDialog, ListBody, Tag } from '../components/shared'
@@ -396,12 +396,17 @@ export function WsContext() {
   const [open, setOpen] = useState<string | null>(notes[0]?.id ?? null)
   const cur = notes.find((n) => n.id === open)
   const allTags = Array.from(new Set(d.messages.filter((m) => m.wsId === w.id).flatMap((m) => m.tags)))
+  const writable = canPost(d, w)
   return (
     <div className="mt-5 grid grid-cols-[280px_1fr] gap-6">
       <div className="flex flex-col gap-2">
-        <Button variant="primary" onClick={() => setEditing({ title: '', body: '', tags: [] })}>
-          Add context
-        </Button>
+        {writable ? (
+          <Button variant="primary" onClick={() => setEditing({ title: '', body: '', tags: [] })}>
+            Add context
+          </Button>
+        ) : (
+          <Callout tone="neutral">You can read shared context here, but your membership doesn’t include writing.</Callout>
+        )}
         <div className="text-xs2 text-zinc-500">Versioned notes so the next agent doesn’t rediscover what the last one knew. Agents read and write these over the API and MCP too.</div>
         {notes.map((n) => (
           <button key={n.id} type="button" onClick={() => setOpen(n.id)} className={cx('rounded-lg border px-3 py-2.5 text-left', open === n.id ? 'border-zinc-600 bg-panel' : 'border-edge hover:border-zinc-700')}>
@@ -427,9 +432,11 @@ export function WsContext() {
                 </span>
               </div>
             </div>
-            <Button size="sm" onClick={() => setEditing({ id: cur.id, title: cur.title, body: cur.body, tags: cur.tags })}>
-              Edit
-            </Button>
+            {writable && (
+              <Button size="sm" onClick={() => setEditing({ id: cur.id, title: cur.title, body: cur.body, tags: cur.tags })}>
+                Edit
+              </Button>
+            )}
           </div>
           <div className="mt-4 text-[13px] leading-relaxed whitespace-pre-wrap text-zinc-200">{cur.body}</div>
           <div className="eyebrow mt-6">History</div>

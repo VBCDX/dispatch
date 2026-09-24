@@ -241,7 +241,8 @@ function settleHook(d: DB, msg: Message, hook: FireHook, outcome: 'no-targets' |
 }
 
 /** Makes one call to a fire webhook's URL (simulated: URLs containing fail/down/500 time out). */
-function attemptWebhook(d: DB, msg: Message, hook: FireHook, manual = false) {
+function attemptWebhook(d: DB, msg: Message, hook: FireHook, manualBy?: Pick<AuditEvent, 'actor' | 'actorKind' | 'actorId'>) {
+  const manual = !!manualBy
   const now = Date.now()
   const n = hook.attempts.length + 1
   const failing = /fail|down|500/.test(hook.url)
@@ -270,7 +271,7 @@ function attemptWebhook(d: DB, msg: Message, hook: FireHook, manual = false) {
     wsId: msg.wsId,
     type: 'webhook',
     severity: failing ? 'warn' : 'ok',
-    ...(manual ? {} : { actor: 'Dispatch', actorKind: 'system' as const, actorId: undefined }),
+    ...(manualBy ?? { actor: 'Dispatch', actorKind: 'system' as const, actorId: undefined }),
     object: `${manual ? 'Retried' : 'Fired'} ${host} · ${msg.id}${n > 1 ? ` (attempt ${n})` : ''}`,
     result: failing ? `504 · ${hook.outcome === 'gave-up' ? 'gave up' : hook.nextAttemptAt ? 'retrying' : 'failed'}` : `200 · ${ms} ms`,
     trk,
@@ -301,6 +302,56 @@ function webhookTick(d: DB, now: number) {
     if (isExpired(m, now)) settleHook(d, m, hook, 'expired')
     else if (hook.firedAt && hook.nextAttemptAt && hook.nextAttemptAt <= now) attemptWebhook(d, m, hook)
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Who acts                                                            */
+/* ------------------------------------------------------------------ */
+/**
+ * The principal behind an action. Humans act in the web app; agents act over
+ * the REST API or MCP, and an agent's admin actions are audited as agent
+ * actions ("planner … — as delegated admin"). viaHumanId marks a request a
+ * human sent from the API console with that agent's credentials.
+ */
+export type Actor = { kind: 'human'; id: string } | { kind: 'agent'; id: string; viaHumanId?: string }
+export const TOKEN_GRACE = 10 * MIN
+
+function who(d: DB, by?: Actor) {
+  if (by?.kind === 'agent') {
+    const label = agentById(d, by.id)?.label ?? by.id
+    const via = by.viaHumanId ? humanById(d, by.viaHumanId) : undefined
+    return {
+      ev: { actor: label, actorKind: 'agent' as const, actorId: by.id, ...(by.viaHumanId ? { viaHumanId: by.viaHumanId } : {}) },
+      asAdmin: ' — as delegated admin',
+      detail: [['Agent ID', by.id], ...(via ? [['Sent by', `${via.name} (${via.id}) via API console`]] : [])] as [string, string][],
+    }
+  }
+  const id = by?.id ?? d.currentUserId
+  return { ev: { actor: humanById(d, id)?.name ?? id, actorKind: 'human' as const, actorId: id }, asAdmin: '', detail: [] as [string, string][] }
+}
+function mayAdmin(d: DB, wsId: string, by?: Actor) {
+  const w = wsById(d, wsId)
+  if (!w) return false
+  return by?.kind === 'agent' ? evaluate(d, by.id, wsId, 'admin').allowed : canAdmin(d, w)
+}
+function mayWrite(d: DB, wsId: string, by?: Actor) {
+  const w = wsById(d, wsId)
+  if (!w) return false
+  return by?.kind === 'agent' ? evaluate(d, by.id, wsId, 'write').allowed : canPost(d, w)
+}
+/** Expiring a message: its author (with write), or a workspace admin. */
+export function mayExpire(d: DB, m: Message, by?: Actor) {
+  const a = by ?? { kind: 'human' as const, id: d.currentUserId }
+  const own = m.author.kind === a.kind && m.author.id === a.id
+  return (own && mayWrite(d, m.wsId, by)) || mayAdmin(d, m.wsId, by)
+}
+export const hasHumanAdmin = (w: Workspace) => w.members.some((m) => m.kind === 'human' && m.role === 'admin')
+/** Agent-only admin is allowed (agent parity), but it's flagged: org admins are then the only human backstop. */
+function flagNoHumanAdmin(d: DB, w: Workspace, hadHuman: boolean, by?: Actor) {
+  const admins = w.members.filter((m) => m.role === 'admin')
+  if (!hadHuman || hasHumanAdmin(w) || !admins.length) return
+  const names = admins.map((m) => principalName(d, m)).join(', ')
+  log(d, { ...who(d, by).ev, wsId: w.id, severity: 'warn', object: `${w.name} now has no human admin — only ${names}`, result: 'Allowed · flagged', reason: `Agent admins can do everything a human admin can. Org Owners and orgAdmins keep admin on ${w.name} and can still step in.` })
 }
 
 /* ------------------------------------------------------------------ */
@@ -366,72 +417,91 @@ export const actions = {
   },
 
   /** Adds an agent or human. Agents get a per-membership workspace token, returned once. */
-  addMember(wsId: string, p: Principal, role: MemberRole, read: boolean, write: boolean): string | null {
+  addMember(wsId: string, p: Principal, role: MemberRole, read: boolean, write: boolean, by?: Actor): string | null {
     let token: string | null = null
     update((d) => {
       const w = wsById(d, wsId)
-      if (!w || w.members.some((m) => m.kind === p.kind && m.id === p.id)) return
+      if (!w || !mayAdmin(d, wsId, by) || w.members.some((m) => m.kind === p.kind && m.id === p.id)) return
+      const a = who(d, by)
       // Humans in a workspace always read everything; only writing is optional.
-      const m: Membership = { kind: p.kind, id: p.id, role, read: p.kind === 'human' ? true : read, write, addedBy: me(d).name, addedAt: Date.now(), delegatedBy: role === 'admin' ? me(d).name : undefined }
+      const m: Membership = { kind: p.kind, id: p.id, role, read: p.kind === 'human' ? true : read, write, addedBy: a.ev.actor, addedAt: Date.now(), delegatedBy: role === 'admin' ? a.ev.actor : undefined }
       if (p.kind === 'agent') {
         token = newWsToken()
         sessionSecrets.set(`ws:${wsId}:${p.id}`, token)
         m.tokenLast4 = token.slice(-4)
       }
       w.members.push(m)
-      log(d, { wsId, object: `Added ${principalName(d, p)} (${p.kind}) to ${w.name} as ${role}${p.kind === 'agent' ? ` · token ••••${m.tokenLast4}` : ''}` })
+      log(d, { ...a.ev, wsId, object: `Added ${principalName(d, p)} (${p.kind}) to ${w.name} as ${role}${p.kind === 'agent' ? ` · token ••••${m.tokenLast4}` : ''}${a.asAdmin}` })
     })
     return token
   },
-  setMember(wsId: string, p: Principal, patch: Partial<Pick<Membership, 'role' | 'read' | 'write'>>) {
+  setMember(wsId: string, p: Principal, patch: Partial<Pick<Membership, 'role' | 'read' | 'write'>>, by?: Actor) {
     update((d) => {
       const w = wsById(d, wsId)
       const m = w?.members.find((x) => x.kind === p.kind && x.id === p.id)
-      if (!w || !m) return
+      if (!w || !m || !mayAdmin(d, wsId, by)) return
+      // A workspace always keeps at least one admin.
+      if (patch.role === 'member' && m.role === 'admin' && w.members.filter((x) => x.role === 'admin').length === 1) return
+      const a = who(d, by)
+      const hadHuman = hasHumanAdmin(w)
       const was = m.role
       Object.assign(m, patch)
+      if (m.kind === 'human') m.read = true
       if (patch.role === 'admin' && was !== 'admin') {
-        m.delegatedBy = me(d).name
-        log(d, { wsId, object: `Delegated admin on ${w.name} to ${principalName(d, p)} (${p.kind})` })
+        m.delegatedBy = a.ev.actor
+        log(d, { ...a.ev, wsId, object: `Delegated admin on ${w.name} to ${principalName(d, p)} (${p.kind})${a.asAdmin}` })
       } else if (patch.role === 'member' && was === 'admin') {
         m.delegatedBy = undefined
-        log(d, { wsId, object: `Removed admin on ${w.name} from ${principalName(d, p)}` })
+        log(d, { ...a.ev, wsId, object: `Removed admin on ${w.name} from ${principalName(d, p)}${a.asAdmin}` })
       } else {
         const n = p.kind === 'agent' ? recheckReceipts(d, { wsId, agentId: p.id }) : 0
-        log(d, { wsId, object: `Changed ${principalName(d, p)}'s access in ${w.name} → ${m.read ? 'read' : ''}${m.read && m.write ? ' + ' : ''}${m.write ? 'write' : ''}${!m.read && !m.write ? 'none' : ''}`, result: `Done${filteredNote(n)}` })
+        log(d, { ...a.ev, wsId, object: `Changed ${principalName(d, p)}'s access in ${w.name} → ${m.read ? 'read' : ''}${m.read && m.write ? ' + ' : ''}${m.write ? 'write' : ''}${!m.read && !m.write ? 'none' : ''}${a.asAdmin}`, result: `Done${filteredNote(n)}` })
       }
+      flagNoHumanAdmin(d, w, hadHuman, by)
     })
   },
-  rotateMemberToken(wsId: string, agentId: string) {
+  /** New workspace token for one membership. The old one keeps working for 10 minutes, like agent tokens. */
+  rotateMemberToken(wsId: string, agentId: string, by?: Actor): string | null {
     const token = newWsToken()
-    sessionSecrets.set(`ws:${wsId}:${agentId}`, token)
+    let ok = false
     update((d) => {
       const m = wsById(d, wsId)?.members.find((x) => x.kind === 'agent' && x.id === agentId)
-      if (!m) return
+      if (!m || !mayAdmin(d, wsId, by)) return
+      const a = who(d, by)
+      m.prevTokenLast4 = m.tokenRevoked ? undefined : m.tokenLast4
+      m.prevTokenUntil = m.tokenRevoked ? undefined : Date.now() + TOKEN_GRACE
       m.tokenLast4 = token.slice(-4)
       m.tokenRevoked = false
-      log(d, { wsId, object: `Rotated ${agentById(d, agentId)?.label}'s workspace token → ••••${m.tokenLast4}` })
+      sessionSecrets.set(`ws:${wsId}:${agentId}`, token)
+      ok = true
+      log(d, { ...a.ev, wsId, object: `Rotated ${agentById(d, agentId)?.label}'s workspace token → ••••${m.tokenLast4}${a.asAdmin}`, result: m.prevTokenLast4 ? `Old ••••${m.prevTokenLast4} works until ${clock(m.prevTokenUntil!)}` : 'Done' })
     })
-    return token
+    return ok ? token : null
   },
-  removeMember(wsId: string, p: Principal) {
+  removeMember(wsId: string, p: Principal, by?: Actor) {
     update((d) => {
       const w = wsById(d, wsId)
-      if (!w) return
-      w.members = w.members.filter((m) => !(m.kind === p.kind && m.id === p.id))
+      const m = w?.members.find((x) => x.kind === p.kind && x.id === p.id)
+      if (!w || !m || !mayAdmin(d, wsId, by)) return
+      if (m.role === 'admin' && w.members.filter((x) => x.role === 'admin').length === 1) return
+      const a = who(d, by)
+      const hadHuman = hasHumanAdmin(w)
+      w.members = w.members.filter((x) => x !== m)
       const n = p.kind === 'agent' ? recheckReceipts(d, { wsId, agentId: p.id }) : 0
-      log(d, { wsId, object: `Removed ${principalName(d, p)} from ${w.name}${p.kind === 'agent' ? ' — its workspace token stops working now' : ''}`, result: `Done${filteredNote(n)}` })
+      log(d, { ...a.ev, wsId, object: `Removed ${principalName(d, p)} from ${w.name}${p.kind === 'agent' ? ' — its workspace token stops working now' : ''}${a.asAdmin}`, result: `Done${filteredNote(n)}` })
+      flagNoHumanAdmin(d, w, hadHuman, by)
     })
   },
-  setWsBlocklist(wsId: string, ids: string[]) {
+  setWsBlocklist(wsId: string, ids: string[], by?: Actor) {
     update((d) => {
       const w = wsById(d, wsId)
-      if (!w) return
+      if (!w || !mayAdmin(d, wsId, by)) return
+      const a = who(d, by)
       const added = ids.filter((x) => !w.agentBlocklist.includes(x))
       const removed = w.agentBlocklist.filter((x) => !ids.includes(x))
       w.agentBlocklist = ids
-      for (const id of added) log(d, { wsId, object: `Added ${agentById(d, id)?.label} to ${w.name} blocklist`, result: `Done${filteredNote(recheckReceipts(d, { wsId, agentId: id }))}` })
-      for (const id of removed) log(d, { wsId, object: `Removed ${agentById(d, id)?.label} from ${w.name} blocklist` })
+      for (const id of added) log(d, { ...a.ev, wsId, object: `Added ${agentById(d, id)?.label ?? id} to ${w.name} blocklist${a.asAdmin}`, result: `Done${filteredNote(recheckReceipts(d, { wsId, agentId: id }))}` })
+      for (const id of removed) log(d, { ...a.ev, wsId, object: `Removed ${agentById(d, id)?.label ?? id} from ${w.name} blocklist${a.asAdmin}` })
     })
   },
 
@@ -447,16 +517,22 @@ export const actions = {
     })
     return { id, token }
   },
-  rotateAgentToken(id: string) {
+  /** New agent token. The old one keeps working for 10 minutes so a running agent can switch over. */
+  rotateAgentToken(id: string, by?: Actor): string | null {
     const token = newAgentToken()
-    sessionSecrets.set(`agent:${id}`, token)
+    let ok = false
     update((d) => {
       const a = agentById(d, id)
-      if (!a) return
+      if (!a || a.status === 'revoked' || !(by?.kind === 'agent' ? by.id === id : isOrgAdmin(d))) return
+      const w = who(d, by)
+      a.prevTokenLast4 = a.tokenLast4
+      a.prevTokenUntil = Date.now() + TOKEN_GRACE
       a.tokenLast4 = token.slice(-4)
-      log(d, { object: `Rotated agent token for ${a.label}` })
+      sessionSecrets.set(`agent:${id}`, token)
+      ok = true
+      log(d, { ...w.ev, object: `Rotated agent token for ${a.label} → ••••${a.tokenLast4}`, result: `Old ••••${a.prevTokenLast4} works until ${clock(a.prevTokenUntil)}`, detail: [['Agent ID', a.id], ...w.detail] })
     })
-    return token
+    return ok ? token : null
   },
   setAgentStatus(id: string, status: Agent['status']) {
     update((d) => {
@@ -468,13 +544,13 @@ export const actions = {
       log(d, { object: `${status === 'active' ? 'Resumed' : status === 'suspended' ? 'Suspended' : 'Revoked'} agent ${a.label}`, result: `Done${filteredNote(n)}` })
     })
   },
-  setAgentFilters(id: string, f: AgentFilters) {
+  setAgentFilters(id: string, f: AgentFilters, by?: Actor) {
     update((d) => {
       const a = agentById(d, id)
-      if (!a) return
+      if (!a || !(by?.kind === 'agent' ? by.id === id : isOrgAdmin(d))) return
       a.filters = f
       const n = recheckReceipts(d, { agentId: id })
-      log(d, { object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${filteredNote(n)}` })
+      log(d, { ...who(d, by).ev, object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${filteredNote(n)}` })
     })
   },
   renameAgent(id: string, label: string) {
@@ -557,35 +633,40 @@ export const actions = {
     return { id, hookPassword: hookPassword as string | null, listenUrl: listenUrl as string | null }
   },
   /** Human read-state is informational; the receipt lists track agents. */
-  expireNow(msgId: string) {
+  /** Ends a message's life now: undelivered receipts stay undelivered, its listener closes (410), a pending fire hook won't fire. */
+  expireNow(msgId: string, by?: Actor) {
     update((d) => {
       const m = d.messages.find((x) => x.id === msgId)
-      if (!m) return
+      if (!m || isExpired(m) || !mayExpire(d, m, by)) return
+      const w = who(d, by)
+      const pending = Object.values(m.receipts).filter((r) => !r.filtered && !r.deliveredAt).length
       m.expiresAt = Date.now()
-      log(d, { wsId: m.wsId, type: 'message', object: `Expired ${m.id} early`, result: m.webhook?.mode === 'listen' ? 'Listener closed' : 'Done' })
+      log(d, { ...w.ev, wsId: m.wsId, type: 'message', object: `Expired ${m.id} early${m.author.kind === w.ev.actorKind && m.author.id === w.ev.actorId ? '' : ` (${principalName(d, m.author)}’s message)`}${w.asAdmin && !(m.author.kind === 'agent' && m.author.id === w.ev.actorId) ? w.asAdmin : ''}`, result: [m.webhook?.mode === 'listen' ? 'Listener closed' : m.webhook?.mode === 'fire' && !m.webhook.outcome ? 'Webhook won’t fire' : 'Done', pending ? `${pending} never delivered` : ''].filter(Boolean).join(' · '), detail: w.detail.length ? w.detail : undefined })
+      if (m.webhook?.mode === 'fire') maybeFire(d, m)
     })
   },
   /** Issues a new basic-auth password for a message's listener. The old one stops working now. */
-  rotateListenerPassword(msgId: string): string | null {
+  rotateListenerPassword(msgId: string, by?: Actor): string | null {
     const password = newHookPassword()
     let ok = false
     update((d) => {
       const m = d.messages.find((x) => x.id === msgId)
-      if (!m || m.webhook?.mode !== 'listen' || isExpired(m)) return
+      if (!m || m.webhook?.mode !== 'listen' || isExpired(m) || !mayExpire(d, m, by)) return
+      const w = who(d, by)
       const old = m.webhook.passwordLast4
       m.webhook.passwordLast4 = password.slice(-4)
       sessionSecrets.set(`hook:${m.id}`, password)
       ok = true
-      log(d, { wsId: m.wsId, type: 'webhook', severity: 'info', object: `Rotated listener password ${m.webhook.url.split('/').pop()} · message ${m.id}`, result: `••••${old} → ••••${m.webhook.passwordLast4}`, reason: 'The old password stops working now; calls using it get 401.', link: { label: 'Open the message', to: `/workspaces/${m.wsId}/messages?m=${m.id}` } })
+      log(d, { ...w.ev, wsId: m.wsId, type: 'webhook', severity: 'info', object: `Rotated listener password ${m.webhook.url.split('/').pop()} · message ${m.id}${m.author.id === w.ev.actorId ? '' : w.asAdmin}`, result: `••••${old} → ••••${m.webhook.passwordLast4}`, reason: 'The old password stops working now; calls using it get 401.', link: { label: 'Open the message', to: `/workspaces/${m.wsId}/messages?m=${m.id}` } })
     })
     return ok ? password : null
   },
   /** Calls a fire webhook's URL once more, now (outside the retry schedule). */
-  retryWebhook(msgId: string) {
+  retryWebhook(msgId: string, by?: Actor) {
     update((d) => {
       const m = d.messages.find((x) => x.id === msgId)
-      if (!m || m.webhook?.mode !== 'fire' || isExpired(m) || m.webhook.outcome === 'delivered') return
-      attemptWebhook(d, m, m.webhook, true)
+      if (!m || m.webhook?.mode !== 'fire' || isExpired(m) || m.webhook.outcome === 'delivered' || !m.webhook.firedAt || !mayWrite(d, m.wsId, by)) return
+      attemptWebhook(d, m, m.webhook, who(d, by).ev)
     })
   },
   /** Prototype: simulate an external system calling a message's listener. */
@@ -668,19 +749,21 @@ export const actions = {
   },
 
   /* Context */
-  saveNote(n: { id?: string; wsId: string; title: string; body: string; tags: string[] }) {
+  saveNote(n: { id?: string; wsId: string; title: string; body: string; tags: string[] }, actor?: Actor) {
     update((d) => {
-      const by = me(d).name
+      if (!mayWrite(d, n.wsId, actor)) return
+      const w = who(d, actor)
+      const by = w.ev.actor
       if (n.id) {
         const ex = d.notes.find((x) => x.id === n.id)
         if (!ex) return
         Object.assign(ex, { title: n.title, body: n.body, tags: n.tags, version: ex.version + 1, updatedBy: by, updatedAt: Date.now() })
         ex.history.push({ version: ex.version, by, at: Date.now() })
-        log(d, { wsId: n.wsId, type: 'context', object: `Updated context “${n.title}” → v${ex.version}` })
+        log(d, { ...w.ev, wsId: n.wsId, type: 'context', object: `Updated context “${n.title}” → v${ex.version}`, detail: w.detail.length ? w.detail : undefined })
       } else {
         const note: ContextNote = { id: uid('nt'), wsId: n.wsId, title: n.title, body: n.body, tags: n.tags, version: 1, updatedBy: by, updatedAt: Date.now(), history: [{ version: 1, by, at: Date.now() }] }
         d.notes.push(note)
-        log(d, { wsId: n.wsId, type: 'context', object: `Added context “${n.title}”` })
+        log(d, { ...w.ev, wsId: n.wsId, type: 'context', object: `Added context “${n.title}”`, detail: w.detail.length ? w.detail : undefined })
       }
     })
   },

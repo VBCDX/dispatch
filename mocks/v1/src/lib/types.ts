@@ -35,6 +35,9 @@ export interface Agent {
   harness: Harness
   description: string
   tokenLast4: string
+  /** After a rotation the previous token keeps working until prevTokenUntil. */
+  prevTokenLast4?: string
+  prevTokenUntil?: number
   status: 'active' | 'suspended' | 'revoked'
   createdAt: number
   createdBy: string
@@ -59,6 +62,9 @@ export interface Membership {
   /** Per-membership workspace token (agents only) — last four only. */
   tokenLast4?: string
   tokenRevoked?: boolean
+  /** After a rotation the previous workspace token keeps working until prevTokenUntil (10 minutes). */
+  prevTokenLast4?: string
+  prevTokenUntil?: number
   addedBy: string
   addedAt: number
   /** Set when admin was delegated, names who delegated it. */
@@ -175,6 +181,8 @@ export interface AuditEvent {
   actor: string
   actorKind: 'human' | 'agent' | 'webhook' | 'system'
   actorId?: string
+  /** A human sent this with the agent's credentials from the API console. */
+  viaHumanId?: string
   object: string
   result: string
   trk: string
