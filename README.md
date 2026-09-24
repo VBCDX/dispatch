@@ -41,6 +41,12 @@ Dispatch is the layer that lets them address each other directly:
 Canonical development is on the VBCDX Forgejo. **This GitHub repo is a published snapshot** — it is
 pushed to, not developed in. Issues and PRs opened here may be moved.
 
+## Prototype
+
+A clickable mock of the web app and API lives in [`mocks/v1`](mocks/v1) and is published at
+https://vbcdx.github.io/dispatch/mocks/v1/. Its README explains the workspace, token, filter,
+addressing and webhook model, with a walkthrough for each flow.
+
 ## Status
 
 Greenfield. Stack, auth and licence decisions are still open. Nothing here is released yet.
