@@ -211,6 +211,10 @@ export function WsMessages() {
     return Object.entries(c).sort((a, b) => b[1] - a[1])
   }, [all])
   const authors = Array.from(new Set(all.map((m) => `${m.author.kind}:${m.author.id}`)))
+  const authorLabel = (k: string) => {
+    const [kind, id] = k.split(':')
+    return kind === 'agent' ? (agentById(d, id)?.label ?? id) : kind === 'webhook' ? `listener ${id}` : (d.humans.find((h) => h.id === id)?.name ?? id)
+  }
 
   const list = all
     .filter((m) => !m.parentId)
@@ -218,9 +222,9 @@ export function WsMessages() {
       if (!showExpired && isExpired(m, now)) return false
       if (tags.length && !tags.every((t) => m.tags.includes(t))) return false
       if (author && `${m.author.kind}:${m.author.id}` !== author) return false
-      const c = receiptCounts(m)
+      const c = receiptCounts(m, now)
       if (state === 'waiting' && !(c.total > c.acked && !isExpired(m, now))) return false
-      if (state === 'unread' && !(c.total > c.read)) return false
+      if (state === 'unread' && !(c.total > c.read && !isExpired(m, now))) return false
       if (state === 'webhook' && !m.webhook) return false
       if (state === 'mine' && !(m.author.kind === 'human' && m.author.id === d.currentUserId)) return false
       if (q) {
@@ -246,14 +250,11 @@ export function WsMessages() {
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search this workspace — text, tag, message ID, tracking code…" aria-label="Search messages" className="min-w-[220px] flex-1 rounded-lg border border-zinc-700 bg-panel px-3 py-2 text-[13px] outline-none placeholder:text-zinc-500 focus:border-zinc-500" />
           <select aria-label="Author" value={author} onChange={(e) => setAuthor(e.target.value)} className="rounded-lg border border-edge bg-panel px-3 py-2 text-sm2 text-zinc-400 outline-none">
             <option value="">Any author</option>
-            {authors.map((k) => {
-              const [kind, id] = k.split(':')
-              return (
-                <option key={k} value={k}>
-                  {kind === 'agent' ? agentById(d, id)?.label : d.humans.find((h) => h.id === id)?.name}
-                </option>
-              )
-            })}
+            {authors.map((k) => (
+              <option key={k} value={k}>
+                {authorLabel(k)}
+              </option>
+            ))}
           </select>
           <select aria-label="State" value={state} onChange={(e) => setState(e.target.value as StateFilter)} className="rounded-lg border border-edge bg-panel px-3 py-2 text-sm2 text-zinc-400 outline-none">
             <option value="">Any state</option>

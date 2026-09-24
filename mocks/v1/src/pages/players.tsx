@@ -262,10 +262,10 @@ export function AgentDetail() {
       <div className="eyebrow mt-7 mb-2.5">Addressed to it · recent</div>
       <Card className="overflow-hidden">
         {inbox.map((m) => {
-          const s = receiptState(m.receipts[a.id])
+          const s = receiptState(m.receipts[a.id], m, now)
           return (
             <Link key={m.id} to={`/workspaces/${m.wsId}/messages?m=${m.id}`} className="flex items-center gap-3 border-b border-line px-4 py-2.5 text-sm2 last:border-b-0 hover:bg-white/[0.015]">
-              <span className={cx('w-24 shrink-0 text-xs', s === 'acked' ? 'text-green-400' : s === 'read' ? 'text-signal-light' : s === 'filtered' ? 'text-zinc-600' : s === 'queued' ? 'text-amber-400' : 'text-zinc-400')}>{s}</span>
+              <span className={cx('w-28 shrink-0 text-xs', s === 'acked' ? 'text-green-400' : s === 'read' ? 'text-signal-light' : s === 'filtered' || s === 'expired' ? 'text-zinc-600' : s === 'queued' ? 'text-amber-400' : 'text-zinc-400')}>{s === 'expired' ? 'never delivered' : s}</span>
               <span className="w-28 shrink-0 text-xs text-zinc-500">{wsById(d, m.wsId)?.name}</span>
               <span className="truncate text-zinc-300">{m.body}</span>
               <span className="ml-auto shrink-0 text-xs text-zinc-600">{ago(m.createdAt, now).toLowerCase()}</span>

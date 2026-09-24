@@ -2,10 +2,10 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { evaluate, filteredReason, targets } from './access'
 import { HOUR, newAgentToken, newHookPassword, newWsToken, shortId, trackingCode, uid } from './format'
 import { freshDB, populatedDB } from './seed'
-import type { Agent, AgentFilters, Audience, AuditEvent, ContextNote, DB, FireTrigger, Harness, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
+import type { Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, Harness, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
 
 const LS_KEY = 'dispatch-mocks-v1'
-const VERSION = 2
+const VERSION = 3
 
 function load(): DB {
   try {
@@ -47,7 +47,12 @@ export function useNow(ms = 15_000) {
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), ms)
-    return () => clearInterval(t)
+    // Any data change (an expiry, a receipt) also refreshes the clock, so derived states never lag behind it.
+    const off = subscribe(() => setNow(Date.now()))
+    return () => {
+      clearInterval(t)
+      off()
+    }
   }, [ms])
   return now
 }
@@ -69,7 +74,7 @@ export const wsById = (d: DB, id: string | undefined) => d.workspaces.find((w) =
 export const orgAgents = (d: DB) => d.agents.filter((a) => a.orgId === d.currentOrgId)
 export const orgHumans = (d: DB) => d.humans.filter((h) => h.roles[d.currentOrgId])
 export const orgEvents = (d: DB) => d.events.filter((e) => e.orgId === d.currentOrgId)
-export const principalName = (d: DB, p: Principal) => (p.kind === 'agent' ? (agentById(d, p.id)?.label ?? p.id) : (humanById(d, p.id)?.name ?? p.id))
+export const principalName = (d: DB, p: Author) => (p.kind === 'agent' ? (agentById(d, p.id)?.label ?? p.id) : p.kind === 'webhook' ? `listener ${p.id}` : (humanById(d, p.id)?.name ?? p.id))
 
 /** Workspaces the current human can see: org admins see all, others see their memberships. */
 export const myWorkspaces = (d: DB) => {
@@ -84,16 +89,18 @@ export const canPost = (d: DB, w: Workspace) => isOrgAdmin(d) || !!myMembership(
 
 export const isOnline = (a: Agent) => a.status === 'active' && a.connected
 
-export type ReceiptState = 'queued' | 'delivered' | 'read' | 'acked' | 'filtered'
-export function receiptState(r: Message['receipts'][string] | undefined): ReceiptState {
+export const isExpired = (m: Message, now = Date.now()) => m.expiresAt != null && m.expiresAt <= now
+export type ReceiptState = 'queued' | 'delivered' | 'read' | 'acked' | 'filtered' | 'expired'
+/** A receipt's state. Pass the message: one that expired before delivery reads "never delivered", not "queued". */
+export function receiptState(r: Message['receipts'][string] | undefined, m?: Message, now = Date.now()): ReceiptState {
+  if (r?.filtered) return 'filtered'
+  if (m && isExpired(m, now) && !r?.deliveredAt) return 'expired'
   if (!r) return 'queued'
-  if (r.filtered) return 'filtered'
   if (r.ackAt) return 'acked'
   if (r.readAt) return 'read'
   if (r.deliveredAt) return 'delivered'
   return 'queued'
 }
-export const isExpired = (m: Message, now = Date.now()) => m.expiresAt != null && m.expiresAt <= now
 
 /* ------------------------------------------------------------------ */
 /* Logging                                                             */
@@ -473,6 +480,7 @@ export const actions = {
         severity: status === 202 ? 'ok' : 'blocked',
         actor: from,
         actorKind: 'webhook',
+        actorId: m.webhook.url.split('/').pop(),
         object: `Listener ${m.webhook.url.split('/').pop()} · message ${m.id}`,
         result: status === 202 ? '202 · appended to thread' : status === 401 ? '401 · wrong password' : '410 · listener closed',
         trk,
@@ -480,7 +488,8 @@ export const actions = {
         link: { label: 'Open the message', to: `/workspaces/${m.wsId}/messages?m=${m.id}` },
       })
       if (status === 202) {
-        const reply: Message = { id: shortId('msg'), wsId: m.wsId, author: m.author, parentId: m.id, viaWebhook: true, body: `Listener call from ${from}: status update received.`, payload: '{\n  "status": "ok",\n  "source": "external"\n}', tags: m.tags, audience: m.audience, createdAt: Date.now(), expiresAt: null, receipts: {}, trk }
+        // The outside system is its own principal — never the message's author.
+        const reply: Message = { id: shortId('msg'), wsId: m.wsId, author: { kind: 'webhook', id: m.webhook.url.split('/').pop()!, from }, parentId: m.id, body: `Listener call from ${from}: status update received.`, payload: '{\n  "status": "ok",\n  "source": "external"\n}', tags: m.tags, audience: m.audience, createdAt: Date.now(), expiresAt: null, receipts: {}, trk }
         initReceipts(d, w, reply)
         d.messages.push(reply)
       }

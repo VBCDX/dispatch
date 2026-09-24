@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { clock, initials } from '../lib/format'
 import { useDB, wsById } from '../lib/store'
-import type { AuditEvent, Harness, Principal } from '../lib/types'
+import type { AuditEvent, Author, Harness } from '../lib/types'
 import { CopyChip } from './credential'
 import { Avatar, Button, ErrorBox, Field, Footer, Input, Modal, SkeletonRows, cx, useFakeLoad } from './ui'
 
@@ -85,8 +85,19 @@ export function AgentGlyph({ harness, size = 22, dim }: { harness: Harness; size
   )
 }
 
-export function PrincipalChip({ p, size = 22, withKind, className }: { p: Principal; size?: number; withKind?: boolean; className?: string }) {
+export function PrincipalChip({ p, size = 22, withKind, className }: { p: Author; size?: number; withKind?: boolean; className?: string }) {
   const d = useDB()
+  if (p.kind === 'webhook')
+    return (
+      <span className={cx('inline-flex min-w-0 items-center gap-2', className)} title={`Outside system calling listener ${p.id} from ${p.from}`}>
+        <span style={{ width: size, height: size, minWidth: size, fontSize: size > 26 ? 12 : 10 }} className="inline-flex items-center justify-center rounded-md border border-sky-500/30 bg-sky-500/10 font-mono text-sky-400">
+          ⇠
+        </span>
+        <span className="truncate font-mono text-[12.5px] text-sky-300">{p.id}</span>
+        <span className="font-mono text-2xs text-zinc-500">{p.from}</span>
+        {withKind && <span className="text-2xs text-zinc-600">webhook listener</span>}
+      </span>
+    )
   if (p.kind === 'agent') {
     const a = d.agents.find((x) => x.id === p.id)
     return (

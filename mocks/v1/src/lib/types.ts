@@ -47,6 +47,8 @@ export interface Agent {
 export type MemberRole = 'admin' | 'member'
 export type PrincipalKind = 'human' | 'agent'
 export type Principal = { kind: PrincipalKind; id: string }
+/** Who wrote a message: a member, or an outside system calling a message's listener (never an agent or human). */
+export type Author = Principal | { kind: 'webhook'; id: string; from: string }
 
 export interface Membership {
   kind: PrincipalKind
@@ -130,7 +132,7 @@ export type Webhook =
 export interface Message {
   id: string
   wsId: string
-  author: Principal
+  author: Author
   body: string
   payload?: string
   tags: string[]
@@ -141,8 +143,6 @@ export interface Message {
   receipts: Record<string, Receipt>
   webhook?: Webhook
   trk: string
-  /** Appended by a webhook listener call. */
-  viaWebhook?: boolean
 }
 
 export interface ContextNote {

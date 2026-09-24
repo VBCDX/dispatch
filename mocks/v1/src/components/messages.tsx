@@ -14,12 +14,13 @@ import { Button, Callout, Checkbox, Field, Footer, Input, Pill, Segmented, Selec
 /* ------------------------------------------------------------------ */
 const STATE_STYLE: Record<ReceiptState, string> = {
   queued: 'border-zinc-700 text-zinc-500 border-dashed',
+  expired: 'border-zinc-800 text-zinc-500 border-dashed',
   delivered: 'border-zinc-600 text-zinc-300 bg-line',
   read: 'border-signal/40 text-signal-light bg-signal/10',
   acked: 'border-green-500/40 text-green-400 bg-green-500/10',
   filtered: 'border-zinc-800 text-zinc-600 line-through',
 }
-const STATE_LABEL: Record<ReceiptState, string> = { queued: 'Queued', delivered: 'Delivered', read: 'Read', acked: 'Acknowledged', filtered: 'Filtered' }
+const STATE_LABEL: Record<ReceiptState, string> = { queued: 'Queued', delivered: 'Delivered', read: 'Read', acked: 'Acknowledged', filtered: 'Filtered', expired: 'Never delivered' }
 
 export function ReceiptPills({ m, max = 8 }: { m: Message; max?: number }) {
   const d = useDB()
@@ -27,7 +28,7 @@ export function ReceiptPills({ m, max = 8 }: { m: Message; max?: number }) {
   return (
     <span className="flex flex-wrap items-center gap-1">
       {entries.slice(0, max).map(([id, r]) => {
-        const s = receiptState(r)
+        const s = receiptState(r, m)
         const a = agentById(d, id)
         return (
           <span key={id} title={`${a?.label}: ${STATE_LABEL[s]}${r.filtered ? ` — ${r.filtered}` : ''}`} className={cx('rounded border px-1.5 py-px font-mono text-[10.5px]', STATE_STYLE[s])}>
@@ -41,9 +42,10 @@ export function ReceiptPills({ m, max = 8 }: { m: Message; max?: number }) {
   )
 }
 
-export function receiptCounts(m: Message) {
+export function receiptCounts(m: Message, now = Date.now()) {
   const rs = Object.values(m.receipts).filter((r) => !r.filtered)
-  return { total: rs.length, delivered: rs.filter((r) => r.deliveredAt).length, read: rs.filter((r) => r.readAt).length, acked: rs.filter((r) => r.ackAt).length, filtered: Object.values(m.receipts).length - rs.length }
+  const expired = isExpired(m, now)
+  return { total: rs.length, delivered: rs.filter((r) => r.deliveredAt).length, read: rs.filter((r) => r.readAt).length, acked: rs.filter((r) => r.ackAt).length, filtered: Object.values(m.receipts).length - rs.length, expired, neverDelivered: expired ? rs.filter((r) => !r.deliveredAt).length : 0 }
 }
 
 function WebhookBadge({ m }: { m: Message }) {
@@ -64,7 +66,7 @@ function WebhookBadge({ m }: { m: Message }) {
 export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Message; onOpen: () => void; replies: number; onTag?: (t: string) => void; activeTags?: string[] }) {
   const d = useDB()
   const now = useNow(10_000)
-  const c = receiptCounts(m)
+  const c = receiptCounts(m, now)
   const expired = isExpired(m, now)
   const soon = !expired && m.expiresAt && m.expiresAt - now < 2 * 3_600_000
   return (
@@ -72,7 +74,7 @@ export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Mess
       <header className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <PrincipalChip p={m.author} />
         {m.author.kind === 'human' && <Pill className="!py-0">human</Pill>}
-        {m.viaWebhook && <Pill tone="blue" className="!py-0">via listener</Pill>}
+        {m.author.kind === 'webhook' && <Pill tone="blue" className="!py-0">via listener</Pill>}
         <span className="text-xs text-zinc-600">→</span>
         <span className="text-xs text-zinc-400">{audienceLabel(d, m.audience)}</span>
         <span className="ml-auto flex items-center gap-2 text-xs text-zinc-500">
@@ -101,7 +103,9 @@ export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Mess
       {c.total + c.filtered > 0 && (
         <button type="button" onClick={onOpen} className="mt-2.5 flex w-full flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-line pt-2.5 text-left">
           <span className="text-xs text-zinc-500">
+            {c.expired && <span>Expired · </span>}
             Read by <span className="text-zinc-300">{c.read}</span> of {c.total} · acked <span className="text-zinc-300">{c.acked}</span>
+            {c.neverDelivered > 0 && <span> · {c.neverDelivered} never delivered</span>}
             {c.filtered > 0 && <span> · {c.filtered} filtered</span>}
           </span>
           <ReceiptPills m={m} />
@@ -405,7 +409,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
   if (!m) return null
   const thread = d.messages.filter((x) => x.parentId === m.id).sort((a, b) => a.createdAt - b.createdAt)
   const expired = isExpired(m, now)
-  const c = receiptCounts(m)
+  const c = receiptCounts(m, now)
   const list = (key: 'deliveredAt' | 'readAt' | 'ackAt') =>
     Object.entries(m.receipts)
       .filter(([, r]) => r[key] && !r.filtered)
@@ -465,7 +469,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
             ))}
           </div>
           {Object.entries(m.receipts).map(([id, r]) => {
-            const s = receiptState(r)
+            const s = receiptState(r, m, now)
             const a = agentById(d, id)
             return (
               <div key={id} className="border-b border-line px-3.5 py-2 text-xs last:border-b-0">
@@ -474,6 +478,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                   <span>
                     <span className={cx('rounded border px-1.5 py-px font-mono text-[10.5px]', STATE_STYLE[s])}>{STATE_LABEL[s]}</span>
                     {s === 'queued' && a && !isOnline(a) && <span className="ml-1.5 text-2xs text-zinc-500">offline</span>}
+                    {expired && (s === 'delivered' || s === 'read') && <span className="ml-1.5 text-2xs text-zinc-500">expired · never {s === 'delivered' ? 'read' : 'acked'}</span>}
                   </span>
                   {(['deliveredAt', 'readAt', 'ackAt'] as const).map((k) => (
                     <span key={k} className="font-mono text-zinc-500">
@@ -601,7 +606,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
             <div key={r.id} className="rounded-lg border border-edge bg-rail px-3.5 py-2.5">
               <div className="flex items-center gap-2 text-xs">
                 <PrincipalChip p={r.author} size={18} />
-                {r.viaWebhook && <Pill tone="blue" className="!py-0">via listener</Pill>}
+                {r.author.kind === 'webhook' && <Pill tone="blue" className="!py-0">via listener</Pill>}
                 <span className="ml-auto text-zinc-500">{ago(r.createdAt, now).toLowerCase()}</span>
               </div>
               <div className="mt-1.5 text-[13px] whitespace-pre-wrap text-zinc-200">{r.body}</div>

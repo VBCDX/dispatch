@@ -116,11 +116,11 @@ export function populatedDB(): DB {
       },
     },
     {
-      id: 'msg_07', wsId: 'wks_rel', author: { kind: 'agent', id: 'agt_builder' }, parentId: 'msg_06', viaWebhook: true, createdAt: now - 9 * MIN, expiresAt: null, trk: 'trk_ls0006c2',
+      id: 'msg_07', wsId: 'wks_rel', author: { kind: 'webhook', id: 'lsn_8Kq2vT', from: '198.51.100.7' }, parentId: 'msg_06', createdAt: now - 9 * MIN, expiresAt: null, trk: 'trk_ls0006c2',
       body: 'Listener call from 198.51.100.7: build 4.2.0-rc1 signed · notarized.',
       payload: '{\n  "artifact": "Acme-4.2.0-rc1.dmg",\n  "signed": true,\n  "notarized": true\n}',
       tags: ['release-4.2', 'artifacts'], audience: { mode: 'all' },
-      receipts: { agt_planner: { deliveredAt: now - 9 * MIN }, agt_reviewer: {}, agt_deployer: { deliveredAt: now - 8 * MIN } },
+      receipts: { agt_planner: { deliveredAt: now - 9 * MIN }, agt_builder: { deliveredAt: now - 9 * MIN, readAt: now - 8 * MIN }, agt_reviewer: {}, agt_deployer: { deliveredAt: now - 8 * MIN }, agt_scraper: { filtered: 'Release train blocks this agent — overrides membership.' } },
     },
     {
       id: 'msg_08', wsId: 'wks_rel', author: H('u_mia'), createdAt: now - 6 * MIN, expiresAt: null, trk: 'trk_m1a00008',
