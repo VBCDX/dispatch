@@ -1,6 +1,6 @@
 import { evaluate, visibleToAgent } from './access'
 import type { Endpoint, PathParam } from './api'
-import { actions, agentById, fireState, getDB, defaultAdmins, explicitHumanAdmins, humanById, isExpired, mayExpire, receiptState, sessionSecret, wsById, type Actor } from './store'
+import { actions, agentById, fireState, getDB, defaultAdmins, explicitHumanAdmins, humanById, isActive, isExpired, mayExpire, mayRotateListener, receiptState, sessionSecret, wsById, type Actor } from './store'
 import type { Agent, Audience, DB, FireTrigger, Message, Workspace } from './types'
 
 /*
@@ -125,7 +125,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
 
   // Only an active person can send from the console (suspended people can't act anywhere in the UI).
   const sender = humanById(d0, humanId)
-  if (sender?.status !== 'active' || !sender.roles[d0.currentOrgId]) return { status: 403, body: { error: 'console_user_inactive', message: 'Your account isn’t active, so the console won’t send requests for you.' } }
+  if (!isActive(sender, d0.currentOrgId)) return { status: 403, body: { error: 'console_user_inactive', message: 'Your account isn’t active, so the console won’t send requests for you.' } }
 
   // Rule 1: agent ID + agent token, and an active agent.
   if (!a) return refuse(fail(401, 'unauthorized', 'Unknown agent ID.', { rule: 'Agent ID + agent token' }))
@@ -269,7 +269,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       const m = actionableMsg()
       if (!m) return notFound()
       if (isExpired(m)) return refuse(fail(409, 'already_expired', `${m.id} already expired.`))
-      if (!mayExpire(d, m, by)) return refuse(fail(403, 'forbidden', 'Only the message’s author (with write) or a workspace admin can expire it.', { rule: 'Author or workspace admin' }))
+      if (!mayExpire(d, m, by)) return refuse(fail(403, 'forbidden', 'Expiring needs write access in this workspace. Authorship grants nothing extra.', { rule: 'Membership allows write' }))
       const pending = Object.values(m.receipts).filter((r) => !r.filtered && !r.deliveredAt).length
       actions.expireNow(m.id, by)
       return ok(200, { id: m.id, expires_at: iso(getDB().messages.find((x) => x.id === m.id)?.expiresAt), never_delivered: pending })
@@ -311,7 +311,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       if (!m) return notFound()
       if (m.webhook?.mode !== 'listen') return refuse(fail(409, 'no_listener', `${m.id} has no listener.`))
       if (isExpired(m)) return refuse(fail(409, 'expired', `${m.id} expired; its listener is closed.`))
-      if (!mayExpire(d, m, by)) return refuse(fail(403, 'forbidden', 'Only the message’s author (with write) or a workspace admin can rotate its listener password.', { rule: 'Author or workspace admin' }))
+      if (!mayRotateListener(d, m, by)) return refuse(fail(403, 'forbidden', 'Rotating a listener password is reserved for workspace admins.', { rule: 'Membership allows admin' }))
       const pw = actions.rotateListenerPassword(m.id, by)
       return ok(200, { url: m.webhook.url, user: m.webhook.authUser, password: pw, note: 'Shown once. The old password stops working now.' })
     }
@@ -372,9 +372,9 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
         return hadExplicit && !explicitHumanAdmins(getDB(), w2).length ? { default_admins: defaultAdmins(getDB(), w2).map((h) => ({ id: h.id, name: h.name, org_role: h.roles[w2.orgId] })) } : {}
       }
       if (ep.id === 'remove-member') {
-        const pending = m.kind === 'agent' ? d.messages.filter((x) => x.wsId === wsId && x.receipts[m.id] && !x.receipts[m.id].filtered && !x.receipts[m.id].ackAt && !isExpired(x)).length : 0
-        actions.removeMember(wsId, p, by)
-        return ok(200, { removed: true, filtered_receipts: pending, ...fallback() })
+        // Counts come from the re-check itself: only queued receipts are filtered; delivered ones keep their state.
+        const c = actions.removeMember(wsId, p, by)
+        return ok(200, { removed: true, filtered_receipts: c?.filtered ?? 0, delivered_kept: c?.removed ?? 0, ...fallback() })
       }
       const patch: { role?: 'admin' | 'member'; read?: boolean; write?: boolean } = {}
       if (body.role !== undefined) {

@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
-import { actions, agentById, canManageHuman, emailTaken, explicitHumanAdmins, humanFootprint, isLastOwner, isOnline, isOrgAdmin, labelTaken, myOrgRole, org, orgAdmins, principalName, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
+import { actions, agentById, canManageHuman, isActive, statusIn, emailTaken, explicitHumanAdmins, humanFootprint, isLastOwner, isOnline, isOrgAdmin, labelTaken, myOrgRole, org, orgAdmins, principalName, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
 import type { Agent, AgentFilters, Harness, Human, OrgRole, Workspace } from '../lib/types'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
@@ -420,7 +420,7 @@ export function PeoplePage() {
                   {h.roles[d.currentOrgId]}
                   {isLastOwner(d, h) && <div className="text-2xs text-zinc-600">last active Owner</div>}
                 </div>
-                <div>{h.status === 'active' ? <StatusInline tone="green">Active</StatusInline> : h.status === 'invited' ? <StatusInline tone="gray">Invited</StatusInline> : <StatusInline tone="amber">Suspended</StatusInline>}</div>
+                <div>{statusIn(h, d.currentOrgId) === 'active' ? <StatusInline tone="green">Active</StatusInline> : statusIn(h, d.currentOrgId) === 'invited' ? <StatusInline tone="gray">Invited</StatusInline> : <StatusInline tone="amber">Suspended</StatusInline>}</div>
                 <div className="text-xs text-zinc-400">
                   {ws.map((w) => {
                     const m = w.members.find((x) => x.kind === 'human' && x.id === h.id)!
@@ -444,8 +444,8 @@ export function PeoplePage() {
                           : h.roles[d.currentOrgId] === 'user'
                             ? { label: 'Make userAdmin', onClick: () => setActing({ kind: 'role', h, role: 'userAdmin' }) }
                             : { label: 'Make user', onClick: () => setActing({ kind: 'role', h, role: 'user' }) },
-                        iAmOwner && h.roles[d.currentOrgId] !== 'Owner' ? { label: 'Transfer ownership…', disabled: h.status !== 'active', hint: h.status !== 'active' ? 'Only to an active person' : undefined, onClick: () => setActing({ kind: 'transfer', h }) } : null,
-                        h.status === 'suspended'
+                        iAmOwner && h.roles[d.currentOrgId] !== 'Owner' ? { label: 'Transfer ownership…', disabled: !isActive(h, d.currentOrgId), hint: !isActive(h, d.currentOrgId) ? 'Only to an active person' : undefined, onClick: () => setActing({ kind: 'transfer', h }) } : null,
+                        statusIn(h, d.currentOrgId) === 'suspended'
                           ? { label: 'Resume', disabled: !canManageHuman(d, h), onClick: () => actions.setHumanStatus(h.id, 'active') }
                           : { label: 'Suspend…', disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last active Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'suspend', h }) },
                         { label: 'Remove from organization…', danger: true, disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last active Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'remove', h }) },

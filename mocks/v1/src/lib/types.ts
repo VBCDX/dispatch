@@ -7,12 +7,16 @@ export interface Org {
   createdAt: number
 }
 
+export type PersonStatus = 'active' | 'invited' | 'suspended'
+
 export interface Human {
   id: string
   name: string
   email: string
+  /** Per organization: the person's role there… */
   roles: Record<string, OrgRole>
-  status: 'active' | 'invited' | 'suspended'
+  /** …and their status there. Suspension is per org membership: suspended in one org, a person still works in another. */
+  orgStatus: Record<string, PersonStatus>
   lastActive: number | null
   sessions: { device: string; place: string; at: number }[]
 }

@@ -13,9 +13,15 @@ export function DemoPanel() {
     { id: 'u_ravi', label: 'Ravi Mehta', sub: 'userAdmin' },
     { id: 'u_mia', label: 'Mia Chen', sub: 'user' },
     { id: 'u_sam', label: 'Sam Ortiz', sub: 'user' },
+    { id: 'u_leo', label: 'Leo Park', sub: 'Owner' },
   ]
-    // Show each persona's current org role; people removed from the org drop out.
-    .map((p) => ({ ...p, sub: d.humans.find((u) => u.id === p.id)?.roles[d.currentOrgId] ?? '' }))
+    // Each persona's role in the current org, or in their own org when they aren't in this one; people in no org drop out.
+    .map((p) => {
+      const u = d.humans.find((x) => x.id === p.id)
+      const here = u?.roles[d.currentOrgId]
+      const [otherOrg, otherRole] = Object.entries(u?.roles ?? {})[0] ?? []
+      return { ...p, sub: here ?? (otherRole ? `${otherRole} · ${d.orgs.find((o) => o.id === otherOrg)?.name}` : '') }
+    })
     .filter((p) => p.sub)
   const btn = (on: boolean) => cx('rounded-md border px-2.5 py-1 text-xs', on ? 'border-zinc-500 bg-zinc-800 text-zinc-100' : 'border-edge text-zinc-400 hover:text-zinc-200')
   return (

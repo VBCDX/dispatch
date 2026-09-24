@@ -706,7 +706,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                   Simulate a wrong password
                 </Button>
                 <span className="self-center text-2xs text-zinc-600">Prototype: stands in for the outside system.</span>
-                {!expired && (canAdmin(d, ws) || (m.author.kind === 'human' && m.author.id === d.currentUserId && canPost(d, ws))) && (
+                {!expired && canAdmin(d, ws) && (
                   <Button size="sm" className="ml-auto" onClick={() => setRotating(true)}>
                     Rotate password
                   </Button>

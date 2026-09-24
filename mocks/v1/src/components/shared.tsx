@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { clock, initials } from '../lib/format'
-import { accessImpact, actorKey, actorLabel, humanById, useDB, wsLabel } from '../lib/store'
+import { accessImpact, ALREADY_DELIVERED, actorKey, actorLabel, humanById, useDB, wsLabel } from '../lib/store'
 import type { DB } from '../lib/types'
 import type { AuditEvent, Author, Harness } from '../lib/types'
 import { CopyChip } from './credential'
@@ -81,10 +81,10 @@ export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, o
  */
 export function accessImpactRows(d: DB, agentId: string, wsId: string | undefined, final: boolean): [string, ReactNode, ('amber' | 'red')?][] {
   const i = accessImpact(d, agentId, wsId)
-  const kept = i.delivered + i.read
+  const kept = i.delivered + i.read + i.acked
   return [
     ['Queued for it, never delivered', i.queued ? `${i.queued} — ${final ? 'filtered now, never delivered' : 'held; delivered if access returns'}` : 'None', i.queued ? 'amber' : undefined],
-    ['Delivered, not acknowledged', kept ? `${i.delivered} delivered · ${i.read} read — kept as recorded, marked “access removed”` : 'None'],
+    ['Already delivered', kept ? `${kept} ${ALREADY_DELIVERED} (${i.delivered} delivered · ${i.read} read · ${i.acked} acknowledged)` : 'None'],
     [
       'Fire webhooks waiting on it',
       i.hooks.length ? `${final ? 'Won’t fire' : 'Stay pending while it’s held'}: ${i.hooks.map((h) => `${h.id} (${h.url})`).join(', ')}` : 'None',

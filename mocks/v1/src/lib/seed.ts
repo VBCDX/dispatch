@@ -8,7 +8,7 @@ const dana = (now: number) => ({
   name: 'Dana Keller',
   email: 'dana@acme.com',
   roles: { org_acme: 'Owner' as const },
-  status: 'active' as const,
+  orgStatus: { org_acme: 'active' as const },
   lastActive: now,
   sessions: [
     { device: 'MacBook Pro', place: 'San Francisco', at: now },
@@ -157,6 +157,12 @@ export function populatedDB(): DB {
     },
   ]
 
+  messages.push({
+    id: 'msg_n1', wsId: 'wks_docs', author: H('u_mia'), createdAt: now - 2 * HOUR, expiresAt: now + 70 * HOUR, trk: 'trk_nw0000n1',
+    body: 'docs-bot: the 2.3 changelog page needs the new rate-limit section before Friday.',
+    tags: ['docs', 'changelog'], audience: { mode: 'all' },
+    receipts: { agt_docs: done(2 * HOUR - MIN, false) },
+  })
   const ev = (id: string, ago: number, e: Omit<AuditEvent, 'id' | 'at' | 'orgId'>): AuditEvent => ({ id, at: now - ago, orgId: 'org_acme', ...e })
   const events: AuditEvent[] = [
     ev('ev_1', 6 * MIN, { wsId: 'wks_rel', type: 'message', severity: 'ok', actor: 'Mia Chen', actorKind: 'human', actorId: 'u_mia', object: 'Posted to Release train · #qa', result: 'Queued for 4 agents', trk: 'trk_m1a00008' }),
@@ -172,6 +178,7 @@ export function populatedDB(): DB {
     ev('ev_11', 1 * DAY, { wsId: 'wks_rel', type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Delegated admin on Release train to planner (agent)', result: 'Done', trk: 'trk_dl9a0011' }),
     ev('ev_12', 1 * DAY, { wsId: 'wks_rel', type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Delegated admin on Release train to Ravi Mehta', result: 'Done', trk: 'trk_dl9a0012' }),
     ev('ev_13', 2 * DAY, { wsId: 'wks_rel', type: 'admin', severity: 'info', actor: 'Ravi Mehta', actorKind: 'human', actorId: 'u_ravi', object: 'Added web-scraper to Release train blocklist', result: 'Done', trk: 'trk_bl0c0013' }),
+    { id: 'ev_n1', at: now - 2 * HOUR, orgId: 'org_nw', wsId: 'wks_docs', type: 'message', severity: 'ok', actor: 'Mia Chen', actorKind: 'human', actorId: 'u_mia', object: 'Posted to Docs site · #docs #changelog', result: 'For 1 agent', trk: 'trk_nw0000n1' },
   ]
 
   return {
@@ -179,12 +186,18 @@ export function populatedDB(): DB {
     currentUserId: 'u_dana',
     currentOrgId: 'org_acme',
     checklistDismissed: true,
-    orgs: [{ id: 'org_acme', name: 'Acme Corp', createdAt: now - 60 * DAY }],
+    // A second, small organization so per-org suspension is visible: Mia is a user in both.
+    orgs: [
+      { id: 'org_acme', name: 'Acme Corp', createdAt: now - 60 * DAY },
+      { id: 'org_nw', name: 'Northwind Labs', createdAt: now - 20 * DAY },
+    ],
     humans: [
       dana(now),
-      { id: 'u_ravi', name: 'Ravi Mehta', email: 'ravi@acme.com', roles: { org_acme: 'userAdmin' }, status: 'active', lastActive: now - 2 * HOUR, sessions: [{ device: 'ThinkPad', place: 'Austin', at: now - 2 * HOUR }] },
-      { id: 'u_mia', name: 'Mia Chen', email: 'mia@acme.com', roles: { org_acme: 'user' }, status: 'active', lastActive: now - 6 * MIN, sessions: [{ device: 'MacBook Air', place: 'Seattle', at: now - 6 * MIN }] },
-      { id: 'u_sam', name: 'Sam Ortiz', email: 'sam@acme.com', roles: { org_acme: 'user' }, status: 'active', lastActive: now - HOUR, sessions: [] },
+      { id: 'u_ravi', name: 'Ravi Mehta', email: 'ravi@acme.com', roles: { org_acme: 'userAdmin' }, orgStatus: { org_acme: 'active' }, lastActive: now - 2 * HOUR, sessions: [{ device: 'ThinkPad', place: 'Austin', at: now - 2 * HOUR }] },
+      // Mia belongs to two organizations; her status is per organization.
+      { id: 'u_mia', name: 'Mia Chen', email: 'mia@acme.com', roles: { org_acme: 'user', org_nw: 'user' }, orgStatus: { org_acme: 'active', org_nw: 'active' }, lastActive: now - 6 * MIN, sessions: [{ device: 'MacBook Air', place: 'Seattle', at: now - 6 * MIN }] },
+      { id: 'u_sam', name: 'Sam Ortiz', email: 'sam@acme.com', roles: { org_acme: 'user' }, orgStatus: { org_acme: 'active' }, lastActive: now - HOUR, sessions: [] },
+      { id: 'u_leo', name: 'Leo Park', email: 'leo@northwind.dev', roles: { org_nw: 'Owner' }, orgStatus: { org_nw: 'active' }, lastActive: now - 3 * HOUR, sessions: [{ device: 'Linux desktop', place: 'Portland', at: now - 3 * HOUR }] },
     ],
     agents: [
       agent(now, { id: 'agt_planner', label: 'planner', harness: 'Claude Code', tokenLast4: 'Pn7w', description: 'Breaks releases into tasks and keeps the checklist current.' }),
@@ -192,9 +205,21 @@ export function populatedDB(): DB {
       agent(now, { id: 'agt_reviewer', label: 'reviewer', harness: 'OpenCode', tokenLast4: 'Rv8q', description: 'Security and code review.', filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: ['agt_scraper'] } }),
       agent(now, { id: 'agt_deployer', label: 'deployer', harness: 'Claude Code', tokenLast4: 'Dp4m', description: 'Ships to staging and prod; watches rollouts.', filters: { read: true, write: true, workspaceBlocklist: ['wks_sbx'], agentBlocklist: [] } }),
       agent(now, { id: 'agt_scraper', label: 'web-scraper', harness: 'Other', tokenLast4: 'Ws1x', description: 'Collects release notes from vendor sites. Read-only by its own choice.', createdBy: 'Ravi Mehta', createdById: 'u_ravi', filters: { read: true, write: false, workspaceBlocklist: [], agentBlocklist: [] } }),
+      agent(now, { id: 'agt_docs', orgId: 'org_nw', label: 'docs-bot', harness: 'OpenCode', tokenLast4: 'Dx3v', createdBy: 'Leo Park', createdById: 'u_leo', description: 'Keeps the Northwind docs site in sync with releases.' }),
       agent(now, { id: 'agt_triage', label: 'triage-bot', harness: 'Codex', tokenLast4: 'Tr5z', status: 'suspended', lastSeen: now - 3 * DAY, connected: false, description: 'Labels incoming incidents. Suspended while its prompt is rewritten.' }),
     ],
     workspaces: [
+      {
+        id: 'wks_docs', orgId: 'org_nw', name: 'Docs site', description: 'Northwind’s public docs: drafts, reviews and publishing.', createdAt: now - 20 * DAY,
+        members: [
+          mem(now, { kind: 'human', id: 'u_leo', role: 'admin', addedBy: 'Leo Park', addedById: 'u_leo' }),
+          mem(now, { kind: 'human', id: 'u_mia', addedBy: 'Leo Park', addedById: 'u_leo' }),
+          mem(now, { kind: 'agent', id: 'agt_docs', tokenLast4: 'Dw1q', addedBy: 'Leo Park', addedById: 'u_leo' }),
+        ],
+        agentBlocklist: [],
+        defaultExpiryHours: 72,
+        retentionDays: 90,
+      },
       {
         id: 'wks_rel', orgId: 'org_acme', name: 'Release train', description: 'Everything that gets a release out the door: plan, build, review, deploy.', createdAt: now - 30 * DAY,
         members: [

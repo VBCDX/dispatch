@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { evaluate, type Op } from '../lib/access'
 import { ago, clock, maskAgentToken, maskWsToken, plural } from '../lib/format'
-import { actions, agentById, canAdmin, defaultAdmins, getDB, isExpired, isOrgAdmin, me, ORG_ADMIN_ROLES, orgAdmins, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
+import { actions, agentById, canAdmin, defaultAdmins, isActive, statusIn, getDB, isExpired, isOrgAdmin, me, ORG_ADMIN_ROLES, orgAdmins, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
 import type { Harness, Membership, MemberRole, OrgRole, Principal } from '../lib/types'
 import { CopyChip, DispatchMark, KeyholeIcon } from '../components/credential'
 import { showSecret } from '../lib/secrets'
@@ -84,7 +84,7 @@ export function WsMembers() {
               <div>
                 <Pill tone={m.role === 'admin' ? 'green' : 'neutral'}>{m.role}</Pill>
                 {m.role !== 'admin' && defaults.some((h) => h.id === m.id) && <div className="mt-0.5 text-2xs text-green-400">default admin (org {humanById(d, m.id)?.roles[d.currentOrgId]})</div>}
-                {m.kind === 'human' && humanById(d, m.id)?.status !== 'active' && <div className="mt-0.5 text-2xs text-amber-400">{humanById(d, m.id)?.status} — can’t act{m.role === 'admin' ? '; not counted as the human admin' : ''}</div>}
+                {m.kind === 'human' && !isActive(humanById(d, m.id), w.orgId) && <div className="mt-0.5 text-2xs text-amber-400">{statusIn(humanById(d, m.id), w.orgId) ?? 'not in the org'} — can’t act{m.role === 'admin' ? '; not counted as the human admin' : ''}</div>}
                 {m.delegatedBy && <div className="mt-0.5 text-2xs text-zinc-500">delegated by {m.delegatedBy}</div>}
               </div>
               <div>
@@ -165,7 +165,7 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
             title: `Delegate admin on ${w.name} to ${name}?`,
             rows: [
               ['Kind', m.kind],
-              ['Can then', 'Add and remove members, delegate or remove admin, set the blocklist, rotate workspace tokens, expire any message, rotate listener passwords, read the audit log, change settings', 'amber'],
+              ['Can then', 'Add and remove members, delegate or remove admin, set the blocklist, rotate workspace tokens, rotate listener passwords, read the audit log, change settings', 'amber'],
               ['Through', m.kind === 'agent' ? 'The REST API and MCP, with its own agent + workspace tokens' : 'The web app'],
               ['Audited as', m.kind === 'agent' ? `“${name} … — as delegated admin” (agent actions)` : `${name}’s own actions`],
             ],
@@ -207,7 +207,7 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
               ? {
                   title: `Turn off writing for ${name} in ${w.name}?`,
                   rows: [
-                    ['Can no longer', m.kind === 'agent' ? 'Send messages, expire its messages, retry webhooks, write shared context' : 'Post, expire messages, retry webhooks, edit shared context', 'amber'],
+                    ['Can no longer', m.kind === 'agent' ? 'Send messages, expire messages, retry webhooks, write shared context' : 'Post, expire messages, retry webhooks, edit shared context', 'amber'],
                     ['Still can', m.kind === 'agent' ? 'Read what’s addressed to it' : 'See and search every message'],
                     ['Already sent', 'Stays as it is'],
                   ],

@@ -72,7 +72,11 @@ humans are members of workspaces in the same way.
   demoted; **People › Transfer ownership** hands it on (never offered to someone who is already an Owner).
 - **Only active people count.** Last-Owner protection, a workspace's human admin and its default admins count only
   active people: a suspended explicit admin hands the workspace to the default admins, and default-admin previews list
-  only active org admins. A suspended person can look around but can't change anything, post, or use the console. People can be made userAdmin or user, suspended and removed, each
+  only active org admins. A suspended person can look around but can't change anything, post, or use the console.
+- **Suspension is per organization.** It's stored on the person's membership in one organization, checked only there,
+  and logged only there. Suspended in one org, a person keeps working in any other; resuming them in one org never
+  touches another. The sidebar's organization switcher marks the orgs where you're suspended. The populated scenario
+  has a second organization, **Northwind Labs** (Owner: Leo Park), where Mia is also a user. People can be made userAdmin or user, suspended and removed, each
   behind a preview that says what stays: agents they registered keep working (agents belong to the organization;
   *registered by* is audit only), admin rights they delegated stand, and their messages stay under their name.
   Creator fields (*registered by*, *added by*, *delegated by*) are permanent audit fields and never grant rights —
@@ -155,7 +159,8 @@ Switch on the webhook toggle when composing a message:
   can't resolve say so too: *won't fire — no deliverable targets*, *won't fire — message expired*. The composer
   refuses a read/ack trigger nobody can meet.
 - **Listen** gives the message its own URL (`https://hooks.dispatch.dev/l/lsn_…`) and a basic-auth password
-  that's shown once (*Rotate password* issues a new one). Each accepted call (202) is appended to the thread as the
+  that's shown once (a workspace admin can *Rotate password* to issue a new one). Anyone with write can expire a
+  message; authorship grants nothing extra. Each accepted call (202) is appended to the thread as the
   listener itself (`lsn_… · 198.51.100.7`), never as the message's author. A wrong password gets 401, and once the
   message expires the listener returns 410.
 - **Observability:** every attempt and call is recorded with its status, timing, source and tracking code. That
@@ -197,7 +202,7 @@ switch persona, pause the simulated agents, or force every list into its loading
 | 4 | **Listener** | The builder's *waiting on the build farm* message has a 401 call (wrong password) and a 202 call that was appended to its thread by `lsn_8Kq2vT`. Use *Simulate a call* or *Simulate a wrong password*, *Rotate password*, or *Expire now* and then call it again to get a 410. Compose your own with Webhook › Listen and you get the URL and the one-time password. |
 | 5 | **Delegation** | Members: planner (an **agent**) and Ravi are admins delegated by Dana. Delegate or remove admin from the ⋯ menu (each shows an impact preview). Remove admin from Ravi, then from Dana: the preview says Dana Keller and Ravi Mehta (org admins) become the workspace's default admins, the Members tab lists them as *Default admin*, and Audit records the fallback — planner stays admin but never the only one. On **People**, the last Owner is protected; transfer ownership to Ravi, switch to Ravi, and remove Dana: her agents, the admin rights she delegated and her messages all stay. The audit log shows planner adding deployer *as delegated admin*; to produce such rows yourself, use Try it as planner (Flow 8) on the admin endpoints. |
 | 6 | **Blocklists and filters** | Access tab: web-scraper is a member with a valid token but sits on the workspace blocklist, so the checker shows it refused at rule 3. *Block…* previews what a new block affects. On the Agents page, deployer blocks *Sandbox* on its own side, reviewer blocks web-scraper as an author, and web-scraper has made itself read-only. Disconnect deployer, send it a message, block it, reconnect: the queued receipt turns *Filtered*, not delivered, while the ones it had already read keep their state with an *access removed* note. Suspend it instead and the queue is *Held*, then delivered on resume. Block the only target that hasn't acknowledged an all-ack message and its webhook says *Won't fire*, instead of firing. |
-| 7 | **Human oversight** | View as *Mia* (a user): she sees and searches every message, including ones addressed *only* to other agents, and can post, but can't manage members. **Search** spans workspaces, and *Waiting on an ack* finds stalled messages. |
+| 7 | **Human oversight** | View as *Mia* (a user): she sees and searches every message, including ones addressed *only* to other agents, and can post, but can't manage members. **Search** spans workspaces, and *Waiting on an ack* finds stalled messages. Suspend Mia on **People** (as Dana): as Mia, Acme Corp is read-only with a banner and marked *suspended* in the organization switcher, while in **Northwind Labs** she still posts to *Docs site*. |
 | 8 | **API & MCP** | Developers › Try it. The console needs the agent's real tokens: without them it's **401**. Seeded agents' tokens were never shown, so rotate builder's agent token (Agents › builder) and its Release train token (Members › ⋯), then *Use the one issued in this tab*. As *builder*, send a message and get **201** with the per-agent receipts, read and acknowledge a chosen message, and see that `GET msg_05` (addressed only to deployer) is **404** and search leaves it out. As *web-scraper* (after rotating its agent token), reading Release train returns **403** naming the blocklist rule. Every call shows up in Audit as the agent *via* you. |
 
 ## Decisions to revisit before this becomes a spec
