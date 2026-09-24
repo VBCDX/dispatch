@@ -6,7 +6,7 @@ import type { Message } from '../lib/types'
 import { Composer, MessageCard, MessageDrawer, fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, ImpactDialog, ListBody, Tag } from '../components/shared'
 import { Breadcrumb, Button, Callout, Card, Checkbox, Field, Footer, Input, Modal, PageTitle, Pill, Row, Select, Table, Tabs, Textarea, cx } from '../components/ui'
-import { TagInput } from '../components/messages'
+import { TagInput, withDraftTag } from '../components/messages'
 
 /* ------------------------------------------------------------------ */
 /* List                                                                */
@@ -393,6 +393,11 @@ export function WsContext() {
   const now = useNow()
   const notes = d.notes.filter((n) => n.wsId === w.id).sort((a, b) => b.updatedAt - a.updatedAt)
   const [editing, setEditing] = useState<{ id?: string; title: string; body: string; tags: string[] } | null>(null)
+  const [tagDraft, setTagDraft] = useState('')
+  const closeEditor = () => {
+    setTagDraft('')
+    setEditing(null)
+  }
   const [open, setOpen] = useState<string | null>(notes[0]?.id ?? null)
   const cur = notes.find((n) => n.id === open)
   const allTags = Array.from(new Set(d.messages.filter((m) => m.wsId === w.id).flatMap((m) => m.tags)))
@@ -454,20 +459,20 @@ export function WsContext() {
       ) : (
         <div />
       )}
-      <Modal open={!!editing} onClose={() => setEditing(null)} width={600} title={editing?.id ? 'Edit context' : 'Add context'}>
+      <Modal open={!!editing} onClose={closeEditor} width={600} title={editing?.id ? 'Edit context' : 'Add context'}>
         {editing && (
           <>
             <Field label="Title">
               <Input value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} autoFocus />
             </Field>
             <Field label="Tags" optional>
-              <TagInput value={editing.tags} onChange={(tags) => setEditing({ ...editing, tags })} suggestions={allTags} />
+              <TagInput value={editing.tags} onChange={(tags) => setEditing({ ...editing, tags })} suggestions={allTags} draft={tagDraft} onDraft={setTagDraft} />
             </Field>
             <Field label="Body">
               <Textarea rows={8} value={editing.body} onChange={(e) => setEditing({ ...editing, body: e.target.value })} />
             </Field>
             <Footer>
-              <Button size="lg" onClick={() => setEditing(null)}>
+              <Button size="lg" onClick={closeEditor}>
                 Cancel
               </Button>
               <Button
@@ -475,7 +480,8 @@ export function WsContext() {
                 variant="primary"
                 disabled={!editing.title.trim() || !editing.body.trim()}
                 onClick={() => {
-                  actions.saveNote({ ...editing, wsId: w.id })
+                  actions.saveNote({ ...editing, tags: withDraftTag(editing.tags, tagDraft), wsId: w.id })
+                  setTagDraft('')
                   setEditing(null)
                 }}
               >

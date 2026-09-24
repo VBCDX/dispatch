@@ -182,11 +182,20 @@ export function AudiencePicker({ ws, value, onChange }: { ws: Workspace; value: 
   )
 }
 
-export function TagInput({ value, onChange, suggestions }: { value: string[]; onChange: (t: string[]) => void; suggestions: string[] }) {
-  const [draft, setDraft] = useState('')
+const cleanTag = (t: string) => t.trim().replace(/^#/, '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
+/** The tags plus whatever is still typed in the field — so a tag typed but not yet entered is never dropped. */
+export function withDraftTag(tags: string[], draft: string) {
+  const c = cleanTag(draft)
+  return c && !tags.includes(c) ? [...tags, c] : tags
+}
+
+/** Tag chips. Pass draft/onDraft to own the typed text, and commit it with withDraftTag() on submit. */
+export function TagInput({ value, onChange, suggestions, draft: draftProp, onDraft }: { value: string[]; onChange: (t: string[]) => void; suggestions: string[]; draft?: string; onDraft?: (s: string) => void }) {
+  const [ownDraft, setOwnDraft] = useState('')
+  const draft = draftProp ?? ownDraft
+  const setDraft = onDraft ?? setOwnDraft
   const add = (t: string) => {
-    const clean = t.trim().replace(/^#/, '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-')
-    if (clean && !value.includes(clean)) onChange([...value, clean])
+    onChange(withDraftTag(value, t))
     setDraft('')
   }
   const sugg = suggestions.filter((s) => !value.includes(s) && s.includes(draft.toLowerCase())).slice(0, 8)
@@ -215,6 +224,7 @@ export function TagInput({ value, onChange, suggestions }: { value: string[]; on
           aria-label="Tags"
           className="min-w-24 flex-1 bg-transparent font-mono text-xs text-zinc-200 outline-none placeholder:font-sans placeholder:text-zinc-600"
         />
+        {cleanTag(draft) && !value.includes(cleanTag(draft)) && <span className="text-2xs whitespace-nowrap text-zinc-500">↵ adds #{cleanTag(draft)} · kept on send</span>}
       </div>
       {sugg.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -240,6 +250,15 @@ const EXPIRY: [string, number | null][] = [
   ['No expiry', null],
 ]
 
+function jsonError(text: string) {
+  try {
+    JSON.parse(text)
+    return null
+  } catch (e) {
+    return (e as Error).message.replace(/^JSON\.parse: /, '').replace(/^Unexpected token/, 'unexpected token')
+  }
+}
+
 export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; parent?: Message; onSent?: (id: string) => void; compact?: boolean }) {
   const d = useDB()
   const [open, setOpen] = useState(!!parent || !compact)
@@ -247,6 +266,7 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
   const [payload, setPayload] = useState('')
   const [showPayload, setShowPayload] = useState(false)
   const [tags, setTags] = useState<string[]>(parent?.tags ?? [])
+  const [tagDraft, setTagDraft] = useState('')
   const [audience, setAudience] = useState<Audience>(parent?.audience ?? { mode: 'all' })
   const [expiry, setExpiry] = useState<string>(String(ws.defaultExpiryHours ?? 'none'))
   const [hookOn, setHookOn] = useState(false)
@@ -256,6 +276,7 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
   const [authUser, setAuthUser] = useState('dispatch')
   const [pwLen, setPwLen] = useState(0)
   const [nonce, setNonce] = useState(0)
+  const [sendAnyway, setSendAnyway] = useState(false)
   const allTags = useMemo(() => Array.from(new Set(d.messages.filter((m) => m.wsId === ws.id).flatMap((m) => m.tags))).sort(), [d.messages, ws.id])
 
   const preview = useMemo(() => {
@@ -272,14 +293,19 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
   const allowed = canPost(d, ws)
   const reachable = preview.total - preview.filtered.length
   const deadHook = hookOn && hookMode === 'fire' && trigger !== 'send' && reachable === 0
-  const ok = allowed && body.trim() && (audience.mode === 'all' || audience.agentIds.length) && !needsExpiry && !badUrl && !deadHook
+  const payloadError = showPayload && payload.trim() ? jsonError(payload) : null
+  const needsUser = hookOn && !authUser.trim() && (hookMode === 'listen' || pwLen > 0)
+  const hasAgents = ws.members.some((m) => m.kind === 'agent')
+  // Agents are here but the audience and filters leave nobody: say so, and make sending a deliberate choice.
+  const nobody = hasAgents && (audience.mode === 'all' || audience.agentIds.length > 0) && reachable === 0
+  const ok = allowed && body.trim() && (audience.mode === 'all' || audience.agentIds.length) && !needsExpiry && !badUrl && !deadHook && !payloadError && !needsUser && (!nobody || sendAnyway)
 
   const send = () => {
     const res = actions.postMessage({
       wsId: ws.id,
       body: body.trim(),
-      payload: showPayload ? payload : undefined,
-      tags,
+      payload: showPayload && payload.trim() ? payload : undefined,
+      tags: withDraftTag(tags, tagDraft),
       audience,
       expiresInHours: expiryHours,
       parentId: parent?.id,
@@ -291,6 +317,8 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
     setShowPayload(false)
     setHookOn(false)
     setPwLen(0)
+    setSendAnyway(false)
+    setTagDraft('')
     setNonce((n) => n + 1)
     if (!parent) setTags([])
     onSent?.(res.id)
@@ -318,13 +346,18 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
         placeholder={parent ? 'Reply in thread…' : `Message ${ws.name} — addressed to the workspace, delivered to agents even if they aren’t connected yet`}
         className="bg-page"
       />
-      {showPayload && <Textarea rows={3} value={payload} onChange={(e) => setPayload(e.target.value)} placeholder='{ "json": "payload" }' className="bg-page font-mono text-xs" />}
+      {showPayload && (
+        <div className="flex flex-col gap-1">
+          <Textarea rows={3} value={payload} onChange={(e) => setPayload(e.target.value)} placeholder='{ "json": "payload" }' aria-label="Payload (JSON)" aria-invalid={!!payloadError} className={cx('bg-page font-mono text-xs', payloadError && 'border-red-500/60 focus:border-red-500')} />
+          {payloadError && <div className="text-xs2 text-red-400">Not valid JSON — {payloadError}. Agents parse this; fix it or clear the payload to send.</div>}
+        </div>
+      )}
       <div className="grid grid-cols-[1fr_1fr] gap-4">
         <Field label="To">
           <AudiencePicker ws={ws} value={audience} onChange={setAudience} />
         </Field>
         <Field label="Tags" optional="filters, not channels">
-          <TagInput value={tags} onChange={setTags} suggestions={allTags} />
+          <TagInput value={tags} onChange={setTags} suggestions={allTags} draft={tagDraft} onDraft={setTagDraft} />
         </Field>
       </div>
       <div className="flex flex-wrap items-center gap-4">
@@ -372,8 +405,8 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
                 </Field>
               </div>
               <div className="grid grid-cols-[1fr_2fr] gap-3">
-                <Field label="Basic auth user">
-                  <Input mono value={authUser} onChange={(e) => setAuthUser(e.target.value)} />
+                <Field label="Basic auth user" error={needsUser ? 'Needed when a password is set.' : null}>
+                  <Input mono value={authUser} onChange={(e) => setAuthUser(e.target.value)} aria-invalid={needsUser} />
                 </Field>
                 <Field label="Password" optional hint={SECRET_LINE}>
                   <SecretField key={nonce} onLength={setPwLen} compact />
@@ -388,8 +421,8 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
           ) : (
             <>
               <div className="grid grid-cols-[1fr_2fr] items-end gap-3">
-                <Field label="Basic auth user">
-                  <Input mono value={authUser} onChange={(e) => setAuthUser(e.target.value)} />
+                <Field label="Basic auth user" error={needsUser ? 'A listener needs a user.' : null}>
+                  <Input mono value={authUser} onChange={(e) => setAuthUser(e.target.value)} aria-invalid={needsUser} />
                 </Field>
                 <div className="pb-2.5 text-xs2 text-zinc-500">A listener URL and password are created when you send. The password is shown once.</div>
               </div>
@@ -400,9 +433,17 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
           )}
         </div>
       )}
+      {nobody && (
+        <Callout tone="amber" className="flex flex-col gap-2">
+          <span>
+            No agent will receive this — {preview.total === 0 ? 'the audience leaves out every agent here' : `every addressed agent is filtered (${preview.filtered.map((f) => agentById(d, f.id)?.label).join(', ')})`}. Humans in the workspace still see it.
+          </span>
+          <Checkbox checked={sendAnyway} onChange={setSendAnyway} label={<span className="text-xs text-amber-300">Send it anyway, to humans only</span>} />
+        </Callout>
+      )}
       <div className="flex items-center justify-between gap-4">
-        <div className="text-xs text-zinc-500">
-          Reaches {plural(preview.total - preview.filtered.length, 'agent')}
+        <div className={cx('text-xs', nobody ? 'text-amber-400' : 'text-zinc-500')}>
+          {hasAgents ? <>Reaches {plural(reachable, 'agent')}</> : <>No agents in {ws.name} yet</>}
           {preview.offline.length > 0 && <> · {preview.offline.length} offline — queued until they connect</>}
           {preview.filtered.length > 0 && (
             <span className="text-amber-400" title={preview.filtered.map((f) => `${agentById(d, f.id)?.label}: ${f.why}`).join('\n')}>
