@@ -84,6 +84,8 @@ export interface Receipt {
   ackAt?: number
   /** Not delivered because of a filter — says which one. */
   filtered?: string
+  /** Set when the receipt was filtered after the message was sent (access changed while it was pending). */
+  filteredAt?: number
 }
 
 export type FireTrigger = 'send' | 'all-read' | 'all-ack'

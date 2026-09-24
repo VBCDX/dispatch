@@ -408,7 +408,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
   const c = receiptCounts(m)
   const list = (key: 'deliveredAt' | 'readAt' | 'ackAt') =>
     Object.entries(m.receipts)
-      .filter(([, r]) => r[key])
+      .filter(([, r]) => r[key] && !r.filtered)
       .map(([id]) => agentById(d, id)?.label ?? id)
   const events = orgEvents(d).filter((e) => e.object.includes(m.id) || e.trk === m.trk || (m.webhook?.mode === 'listen' && e.object.includes(m.webhook.url.split('/').pop()!)))
   const hook = m.webhook
@@ -481,7 +481,12 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                     </span>
                   ))}
                 </div>
-                {r.filtered && <div className="mt-1 pl-[26px] text-2xs text-zinc-500">{r.filtered}</div>}
+                {r.filtered && (
+                  <div className="mt-1 pl-[26px] text-2xs text-zinc-500">
+                    {r.filteredAt && <span className="text-amber-400">Filtered at {clock(r.filteredAt)}, after it was sent — access changed. </span>}
+                    {r.filtered}
+                  </div>
+                )}
               </div>
             )
           })}
