@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { evaluate, filteredReason, targets } from './access'
-import { HOUR, newAgentToken, newHookPassword, newWsToken, shortId, trackingCode, uid } from './format'
+import { HOUR, MIN, clock, newAgentToken, newHookPassword, newWsToken, shortId, trackingCode, uid } from './format'
 import { freshDB, populatedDB } from './seed'
 import type { Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, Harness, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
 
@@ -166,32 +166,123 @@ export function recheckReceipts(d: DB, scope: { wsId?: string; agentId?: string 
 }
 const filteredNote = (n: number) => (n ? ` · ${n} pending receipt${n === 1 ? '' : 's'} filtered` : '')
 
-/** Fires a message's outbound webhook once its trigger is satisfied. */
-export function maybeFire(d: DB, msg: Message) {
-  const hook = msg.webhook
-  if (!hook || hook.mode !== 'fire' || hook.firedAt || isExpired(msg)) return
-  const live = Object.values(msg.receipts).filter((r) => !r.filtered)
-  const ok = hook.trigger === 'send' || (live.length > 0 && live.every((r) => (hook.trigger === 'all-read' ? r.readAt : r.ackAt)))
-  if (!ok) return
-  hook.firedAt = Date.now()
+/* Outbound webhooks: one call when the trigger is met, then up to 3 retries. */
+export const RETRY_DELAYS = [30_000, 2 * MIN, 10 * MIN]
+export const MAX_ATTEMPTS = RETRY_DELAYS.length + 1
+const TRIGGER_TEXT: Record<FireTrigger, string> = { send: 'On send', 'all-read': 'When every target has read it', 'all-ack': 'When every target has acknowledged it' }
+type FireHook = Extract<Webhook, { mode: 'fire' }>
+
+/**
+ * Where a fire webhook stands, for the UI. Filtered targets (blocked,
+ * removed, revoked, suspended, filtered by the agent) drop out of "every
+ * target"; if nobody is left, the hook can never fire and says so.
+ */
+export type FireState =
+  | { k: 'waiting'; pending: string[]; total: number }
+  | { k: 'retrying'; next: number; attempt: number }
+  | { k: 'delivered'; at: number; attempt: number }
+  | { k: 'gave-up'; attempts: number }
+  | { k: 'no-targets' }
+  | { k: 'expired'; attempts: number }
+export function fireState(m: Message, now = Date.now()): FireState | null {
+  const h = m.webhook
+  if (!h || h.mode !== 'fire') return null
+  const okAt = h.attempts.findIndex((a) => a.status < 300)
+  if (h.outcome === 'delivered' || okAt >= 0) return { k: 'delivered', at: h.attempts[okAt]?.at ?? h.outcomeAt ?? now, attempt: okAt + 1 }
+  if (h.outcome === 'gave-up') return { k: 'gave-up', attempts: h.attempts.length }
+  if (h.outcome === 'no-targets') return { k: 'no-targets' }
+  if (h.outcome === 'expired' || isExpired(m, now)) return { k: 'expired', attempts: h.attempts.length }
+  if (h.firedAt) return { k: 'retrying', next: h.nextAttemptAt ?? now, attempt: h.attempts.length + 1 }
+  const live = Object.entries(m.receipts).filter(([, r]) => !r.filtered)
+  if (h.trigger !== 'send' && !live.length) return { k: 'no-targets' }
+  const pending = live.filter(([, r]) => !(h.trigger === 'all-read' ? r.readAt : r.ackAt)).map(([id]) => id)
+  return { k: 'waiting', pending, total: live.length }
+}
+
+function settleHook(d: DB, msg: Message, hook: FireHook, outcome: 'no-targets' | 'expired') {
+  hook.outcome = outcome
+  hook.outcomeAt = Date.now()
+  hook.nextAttemptAt = undefined
+  log(d, {
+    wsId: msg.wsId,
+    type: 'webhook',
+    severity: 'warn',
+    actor: 'Dispatch',
+    actorKind: 'system',
+    object: `Won’t fire ${hook.url.replace(/^https?:\/\//, '')} · ${msg.id}`,
+    result: outcome === 'no-targets' ? 'No deliverable targets' : hook.attempts.length ? 'Message expired · retries stopped' : 'Message expired',
+    reason:
+      outcome === 'no-targets'
+        ? 'Every addressed agent was filtered (or none were addressed), so its trigger can never be met.'
+        : hook.attempts.length
+          ? `The message expired after ${hook.attempts.length} failed attempt${hook.attempts.length === 1 ? '' : 's'}. Nothing fires after expiry.`
+          : 'The message expired before its trigger was met. Nothing fires after expiry.',
+    detail: [['Trigger', TRIGGER_TEXT[hook.trigger]]],
+    link: { label: 'Open the message', to: `/workspaces/${msg.wsId}/messages?m=${msg.id}` },
+  })
+}
+
+/** Makes one call to a fire webhook's URL (simulated: URLs containing fail/down/500 time out). */
+function attemptWebhook(d: DB, msg: Message, hook: FireHook, manual = false) {
+  const now = Date.now()
+  const n = hook.attempts.length + 1
   const failing = /fail|down|500/.test(hook.url)
   const trk = trackingCode()
   const ms = failing ? 10_000 : 120 + Math.floor(Math.random() * 200)
-  hook.attempts.push({ id: uid('wa'), at: Date.now(), status: failing ? 504 : 200, ms, trk, note: failing ? 'Timed out after 10 s — retrying in 30 s' : undefined })
+  let note: string | undefined
+  if (!failing) {
+    hook.outcome = 'delivered'
+    hook.outcomeAt = now
+    hook.nextAttemptAt = undefined
+    note = manual ? 'Manual retry' : n > 1 ? `Retry ${n - 1} of ${RETRY_DELAYS.length}` : undefined
+  } else if (manual) {
+    note = `Timed out after 10 s (manual retry)${hook.nextAttemptAt ? ` — scheduled retry still at ${clock(hook.nextAttemptAt)}` : ''}`
+  } else if (n < MAX_ATTEMPTS) {
+    hook.nextAttemptAt = now + RETRY_DELAYS[n - 1]
+    note = `Timed out after 10 s — attempt ${n + 1} of ${MAX_ATTEMPTS} at ${clock(hook.nextAttemptAt)}`
+  } else {
+    hook.outcome = 'gave-up'
+    hook.outcomeAt = now
+    hook.nextAttemptAt = undefined
+    note = `Timed out after 10 s — gave up after ${MAX_ATTEMPTS} attempts`
+  }
+  hook.attempts.push({ id: uid('wa'), at: now, status: failing ? 504 : 200, ms, trk, note })
   const host = hook.url.replace(/^https?:\/\//, '')
   log(d, {
     wsId: msg.wsId,
     type: 'webhook',
     severity: failing ? 'warn' : 'ok',
-    actor: 'Dispatch',
-    actorKind: 'system',
-    object: `Fired ${host} · ${msg.id}`,
-    result: failing ? '504 · retrying' : `200 · ${ms} ms`,
+    ...(manual ? {} : { actor: 'Dispatch', actorKind: 'system' as const, actorId: undefined }),
+    object: `${manual ? 'Retried' : 'Fired'} ${host} · ${msg.id}${n > 1 ? ` (attempt ${n})` : ''}`,
+    result: failing ? `504 · ${hook.outcome === 'gave-up' ? 'gave up' : hook.nextAttemptAt ? 'retrying' : 'failed'}` : `200 · ${ms} ms`,
     trk,
-    reason: failing ? 'The endpoint didn’t answer in 10 s. Dispatch retries 3 times with backoff (30 s, 2 min, 10 min).' : undefined,
-    detail: [['Trigger', { send: 'On send', 'all-read': 'When every target has read it', 'all-ack': 'When every target has acknowledged it' }[hook.trigger]], ['Auth', hook.authSet ? `Basic · ${hook.authUser}` : 'None']],
+    reason: failing ? note : undefined,
+    detail: [['Trigger', TRIGGER_TEXT[hook.trigger]], ['Auth', hook.authSet ? `Basic · ${hook.authUser}` : 'None'], ['Attempt', manual ? `${n} (manual)` : `${n} of ${MAX_ATTEMPTS}`]],
     link: { label: 'Open the message', to: `/workspaces/${msg.wsId}/messages?m=${msg.id}` },
   })
+}
+
+/** Fires a message's outbound webhook once its trigger is satisfied, or settles it when it never can be. */
+export function maybeFire(d: DB, msg: Message) {
+  const hook = msg.webhook
+  if (!hook || hook.mode !== 'fire' || hook.firedAt || hook.outcome) return
+  if (isExpired(msg)) return settleHook(d, msg, hook, 'expired')
+  const live = Object.values(msg.receipts).filter((r) => !r.filtered)
+  if (hook.trigger !== 'send' && !live.length) return settleHook(d, msg, hook, 'no-targets')
+  const ok = hook.trigger === 'send' || live.every((r) => (hook.trigger === 'all-read' ? r.readAt : r.ackAt))
+  if (!ok) return
+  hook.firedAt = Date.now()
+  attemptWebhook(d, msg, hook)
+}
+
+/** Runs due retries and settles hooks whose message expired. Driven by the simulation tick. */
+function webhookTick(d: DB, now: number) {
+  for (const m of d.messages) {
+    const hook = m.webhook
+    if (hook?.mode !== 'fire' || hook.outcome) continue
+    if (isExpired(m, now)) settleHook(d, m, hook, 'expired')
+    else if (hook.firedAt && hook.nextAttemptAt && hook.nextAttemptAt <= now) attemptWebhook(d, m, hook)
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -452,14 +543,12 @@ export const actions = {
     })
     return ok ? password : null
   },
+  /** Calls a fire webhook's URL once more, now (outside the retry schedule). */
   retryWebhook(msgId: string) {
     update((d) => {
       const m = d.messages.find((x) => x.id === msgId)
-      if (!m || m.webhook?.mode !== 'fire') return
-      const trk = trackingCode()
-      const ms = 140 + Math.floor(Math.random() * 120)
-      m.webhook.attempts.push({ id: uid('wa'), at: Date.now(), status: 200, ms, trk, note: 'Manual retry' })
-      log(d, { wsId: m.wsId, type: 'webhook', severity: 'ok', actor: me(d).name, actorKind: 'human', object: `Retried ${m.webhook.url.replace(/^https?:\/\//, '')} · ${m.id}`, result: `200 · ${ms} ms`, trk })
+      if (!m || m.webhook?.mode !== 'fire' || isExpired(m) || m.webhook.outcome === 'delivered') return
+      attemptWebhook(d, m, m.webhook, true)
     })
   },
   /** Prototype: simulate an external system calling a message's listener. */
@@ -591,6 +680,7 @@ export function liveTick() {
     for (const a of d.agents) if (isOnline(a)) a.lastSeen = now
     // Access is re-checked before any receipt moves.
     recheckReceipts(d)
+    webhookTick(d, now)
     // Progress receipts for online agents, one step at a time.
     for (const m of d.messages) {
       if (isExpired(m, now)) continue

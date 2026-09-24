@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ago, plural, until } from '../lib/format'
-import { actions, agentById, canAdmin, isExpired, isOnline, myMembership, myWorkspaces, orgEvents, useDB, useNow, wsById } from '../lib/store'
+import { actions, agentById, canAdmin, isExpired, MAX_ATTEMPTS, isOnline, myMembership, myWorkspaces, orgEvents, useDB, useNow, wsById } from '../lib/store'
 import type { Message } from '../lib/types'
-import { Composer, MessageCard, MessageDrawer, receiptCounts } from '../components/messages'
+import { Composer, MessageCard, MessageDrawer, fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, ImpactDialog, ListBody, Tag } from '../components/shared'
 import { Breadcrumb, Button, Callout, Card, Checkbox, Field, Footer, Input, Modal, PageTitle, Pill, Row, Select, Table, Tabs, Textarea, cx } from '../components/ui'
 import { TagInput } from '../components/messages'
@@ -332,19 +332,27 @@ export function WsWebhooks() {
   const now = useNow()
   const [open, setOpen] = useState<string | null>(null)
   const list = d.messages.filter((m) => m.wsId === w.id && m.webhook).sort((a, b) => b.createdAt - a.createdAt)
-  const failing = list.filter((m) => m.webhook?.mode === 'fire' && m.webhook.attempts.length && m.webhook.attempts[m.webhook.attempts.length - 1].status >= 300)
+  const name = (id: string) => agentById(d, id)?.label ?? id
+  const retrying = list.filter((m) => fireSummary(m, now, name)?.short === 'retrying').length
+  const gaveUp = list.filter((m) => fireSummary(m, now, name)?.short === 'gave up').length
   return (
     <div className="mt-5">
       <div className="max-w-[760px] text-sm2 text-zinc-500">
         Webhooks live on messages. <span className="text-zinc-300">Fire</span> calls your URL when the message is sent, read by every target, or acknowledged by every target. <span className="text-zinc-300">Listen</span> gives the message a URL of its own that outside systems call, with basic auth, until the message expires. Every call is recorded here and in the audit log.
       </div>
-      {failing.length > 0 && <Callout tone="amber" className="mt-4">{plural(failing.length, 'webhook')} failing — last attempt didn’t return 2xx. Open it to see the attempts and retry.</Callout>}
+      {retrying + gaveUp > 0 && (
+        <Callout tone={gaveUp ? 'red' : 'amber'} className="mt-4">
+          {plural(retrying + gaveUp, 'webhook')} failing{retrying ? ` — ${retrying} retrying on schedule` : ''}
+          {gaveUp ? `${retrying ? ',' : ' —'} ${gaveUp} gave up after ${MAX_ATTEMPTS} attempts` : ''}. Open one to see the attempts and retry.
+        </Callout>
+      )}
       <Table cols={WH_COLS} head={['Message', 'Mode', 'Endpoint', 'Last result', 'Expires']} className="mt-4">
         <ListBody cols={WH_COLS} what="webhooks" empty={list.length ? undefined : <div className="p-10 text-center text-[13px] text-zinc-400">No webhooks yet. Turn on the webhook toggle when you write a message.</div>}>
           {list.map((m) => {
             const h = m.webhook!
             const last = h.mode === 'fire' ? h.attempts[h.attempts.length - 1] : h.calls[h.calls.length - 1]
             const expired = isExpired(m, now)
+            const fire = fireSummary(m, now, name)
             return (
               <Row key={m.id} cols={WH_COLS} onClick={() => setOpen(m.id)} className={cx(expired && 'opacity-60')}>
                 <div className="min-w-0">
@@ -360,8 +368,9 @@ export function WsWebhooks() {
                     {h.mode === 'fire' ? { send: 'on send', 'all-read': 'when all read', 'all-ack': 'when all ack' }[h.trigger] : 'basic auth'} · {h.authUser}
                   </div>
                 </div>
-                <div className={cx('text-xs', !last ? 'text-zinc-500' : last.status < 300 ? 'text-green-400' : 'text-amber-400')}>
-                  {last ? `${last.status} · ${ago(last.at, now).toLowerCase()}` : h.mode === 'fire' ? 'Waiting for trigger' : 'No calls yet'}
+                <div className={cx('text-xs', !last ? 'text-zinc-500' : last.status < 300 ? 'text-green-400' : fire?.tone === 'red' ? 'text-red-400' : 'text-amber-400')}>
+                  {last ? `${last.status} · ${ago(last.at, now).toLowerCase()}` : h.mode === 'fire' ? (fire?.short === 'waiting' ? 'Waiting for trigger' : 'Won’t fire') : 'No calls yet'}
+                  {fire && fire.short !== 'waiting' && fire.short !== '200' && <div className="text-2xs text-zinc-500">{fire.short === 'retrying' ? fire.long.replace(/^Failing — /, '') : fire.short === 'gave up' ? 'Gave up' : fire.long.split('.')[0].replace('Won’t fire: ', '')}</div>}
                   {h.mode === 'listen' && h.calls.length > 0 && <div className="text-2xs text-zinc-500">{plural(h.calls.length, 'call')}</div>}
                 </div>
                 <div className={cx('text-xs', expired ? 'text-zinc-500' : 'text-zinc-400')}>{m.expiresAt ? (expired ? 'Closed' : until(m.expiresAt, now)) : 'Never'}</div>

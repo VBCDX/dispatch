@@ -118,8 +118,14 @@ export type Webhook =
       trigger: FireTrigger
       authUser: string
       authSet: boolean
+      /** When the trigger was met and the first attempt made. */
       firedAt?: number
       attempts: WebhookAttempt[]
+      /** A failed attempt schedules the next one (30 s, 2 min, 10 min). */
+      nextAttemptAt?: number
+      /** Terminal states. Absent while waiting for the trigger or retrying. */
+      outcome?: 'delivered' | 'gave-up' | 'no-targets' | 'expired'
+      outcomeAt?: number
     }
   | {
       mode: 'listen'

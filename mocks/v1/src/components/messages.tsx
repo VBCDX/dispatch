@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { audienceLabel, filteredReason, targets } from '../lib/access'
 import { ago, clock, maskHookPassword, plural, until } from '../lib/format'
-import { actions, agentById, canAdmin, canPost, isExpired, isOnline, orgEvents, principalName, receiptState, useDB, useNow, type ReceiptState } from '../lib/store'
+import { actions, agentById, canAdmin, canPost, fireState, isExpired, MAX_ATTEMPTS, isOnline, orgEvents, principalName, receiptState, useDB, useNow, type ReceiptState } from '../lib/store'
 import type { Audience, FireTrigger, Message, Workspace } from '../lib/types'
 import { CopyChip, SECRET_LINE, SecretField } from './credential'
 import { showSecret } from '../lib/secrets'
@@ -48,13 +48,38 @@ export function receiptCounts(m: Message, now = Date.now()) {
   return { total: rs.length, delivered: rs.filter((r) => r.deliveredAt).length, read: rs.filter((r) => r.readAt).length, acked: rs.filter((r) => r.ackAt).length, filtered: Object.values(m.receipts).length - rs.length, expired, neverDelivered: expired ? rs.filter((r) => !r.deliveredAt).length : 0 }
 }
 
+/** One line for where a fire webhook stands — the same words on the card, the drawer and the Webhooks tab. */
+export function fireSummary(m: Message, now: number, name: (id: string) => string): { tone: 'neutral' | 'green' | 'amber' | 'red'; short: string; long: string } | null {
+  const s = fireState(m, now)
+  if (!s || m.webhook?.mode !== 'fire') return null
+  const verb = m.webhook.trigger === 'all-read' ? 'read' : 'acknowledge'
+  switch (s.k) {
+    case 'waiting':
+      return { tone: 'neutral', short: 'waiting', long: m.webhook.trigger === 'send' ? 'Firing…' : `Not fired yet — waiting for ${s.pending.map(name).join(', ')} to ${verb} it (${s.total - s.pending.length} of ${s.total} done). Filtered targets drop out of “every target”.` }
+    case 'delivered':
+      return { tone: 'green', short: '200', long: `Delivered on attempt ${s.attempt} at ${clock(s.at)}.` }
+    case 'retrying': {
+      const secs = Math.max(0, Math.round((s.next - now) / 1000))
+      return { tone: 'amber', short: 'retrying', long: `Failing — attempt ${s.attempt} of ${MAX_ATTEMPTS} at ${clock(s.next)}${secs ? ` (in ${secs < 90 ? `${secs} s` : `${Math.round(secs / 60)} min`})` : ' (due now)'}.` }
+    }
+    case 'gave-up':
+      return { tone: 'red', short: 'gave up', long: `Gave up after ${s.attempts} attempts. Nothing more is scheduled; Retry now calls it once more.` }
+    case 'no-targets':
+      return { tone: 'neutral', short: 'won’t fire', long: 'Won’t fire: no deliverable targets. Every addressed agent was filtered, so nobody can meet the trigger.' }
+    case 'expired':
+      return { tone: 'neutral', short: 'won’t fire', long: s.attempts ? `Stopped: the message expired after ${s.attempts} failed attempt${s.attempts === 1 ? '' : 's'}. Nothing fires after expiry.` : 'Won’t fire: the message expired before its trigger was met.' }
+  }
+}
+
 function WebhookBadge({ m }: { m: Message }) {
+  const d = useDB()
+  const now = useNow(5000)
   const h = m.webhook
   if (!h) return null
   if (h.mode === 'fire') {
-    const last = h.attempts[h.attempts.length - 1]
+    const f = fireSummary(m, now, (id) => agentById(d, id)?.label ?? id)!
     const trig = { send: 'on send', 'all-read': 'when all read', 'all-ack': 'when all ack' }[h.trigger]
-    return <Pill tone={!last ? 'neutral' : last.status < 300 ? 'green' : 'amber'}>⇢ fire {trig}{last ? ` · ${last.status}` : ' · waiting'}</Pill>
+    return <Pill tone={f.tone}>⇢ fire {trig} · {f.short}</Pill>
   }
   const open = !isExpired(m)
   return <Pill tone={open ? 'blue' : 'neutral'}>⇠ listening{open ? '' : ' · closed'} · {plural(h.calls.length, 'call')}</Pill>
@@ -245,7 +270,9 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
   const needsExpiry = hookOn && hookMode === 'listen' && !expiryHours
   const badUrl = hookOn && hookMode === 'fire' && !/^https:\/\/\S+\.\S+/.test(url)
   const allowed = canPost(d, ws)
-  const ok = allowed && body.trim() && (audience.mode === 'all' || audience.agentIds.length) && !needsExpiry && !badUrl
+  const reachable = preview.total - preview.filtered.length
+  const deadHook = hookOn && hookMode === 'fire' && trigger !== 'send' && reachable === 0
+  const ok = allowed && body.trim() && (audience.mode === 'all' || audience.agentIds.length) && !needsExpiry && !badUrl && !deadHook
 
   const send = () => {
     const res = actions.postMessage({
@@ -352,7 +379,11 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
                   <SecretField key={nonce} onLength={setPwLen} compact />
                 </Field>
               </div>
-              <div className="text-xs2 text-zinc-500">Fires once. Failed calls retry 3 times (30 s, 2 min, 10 min). Nothing fires after the message expires. Every attempt is logged with its status and tracking code.</div>
+              {deadHook ? (
+                <div className="text-xs2 text-amber-400">No agent can receive this message, so “{trigger === 'all-read' ? 'every target has read it' : 'every target has acked it'}” could never be met and the webhook would never fire. Fire on send, or change who it’s to.</div>
+              ) : (
+                <div className="text-xs2 text-zinc-500">Fires once. Failed calls retry 3 times (30 s, 2 min, 10 min), then give up. Filtered targets drop out of “every target”. Nothing fires after the message expires. Every attempt is logged with its status and tracking code.</div>
+              )}
             </>
           ) : (
             <>
@@ -414,6 +445,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
     Object.entries(m.receipts)
       .filter(([, r]) => r[key] && !r.filtered)
       .map(([id]) => agentById(d, id)?.label ?? id)
+  const fire = fireSummary(m, now, (id) => agentById(d, id)?.label ?? id)
   const events = orgEvents(d).filter((e) => e.object.includes(m.id) || e.trk === m.trk || (m.webhook?.mode === 'listen' && e.object.includes(m.webhook.url.split('/').pop()!)))
   const hook = m.webhook
 
@@ -521,6 +553,12 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
             <span className="text-zinc-500">{hook.mode === 'listen' ? 'Open until' : 'Stops at'}</span>
             <span>{m.expiresAt ? `${new Date(m.expiresAt).toLocaleString()}${expired ? ' · closed' : ''}` : 'Never expires'}</span>
           </div>
+          {fire && (
+            <div role="status" className={cx('mt-2 text-xs', fire.tone === 'red' ? 'text-red-400' : fire.tone === 'amber' ? 'text-amber-400' : fire.tone === 'green' ? 'text-green-400' : 'text-zinc-400')}>
+              {fire.long}
+              {fire.tone === 'amber' && !d.live && <span className="text-zinc-500"> Prototype: retries run while the simulation is running.</span>}
+            </div>
+          )}
           <div className="mt-2 overflow-hidden rounded-[10px] border border-edge">
             {hook.mode === 'fire' ? (
               hook.attempts.length ? (
@@ -537,7 +575,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
                   </div>
                 ))
               ) : (
-                <div className="px-3.5 py-3 text-xs text-zinc-500">Not fired yet — waiting for {hook.trigger === 'all-read' ? `${c.total - c.read} more reads` : hook.trigger === 'all-ack' ? `${c.total - c.acked} more acknowledgements` : 'send'}.</div>
+                <div className="px-3.5 py-3 text-xs text-zinc-500">No attempts.</div>
               )
             ) : hook.calls.length ? (
               hook.calls.map((call) => (
@@ -556,7 +594,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
             )}
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
-            {hook.mode === 'fire' && hook.attempts.some((a) => a.status >= 300) && !hook.attempts.some((a) => a.status < 300) && (
+            {fire && (fire.short === 'retrying' || fire.short === 'gave up') && (
               <Button size="sm" onClick={() => actions.retryWebhook(m.id)}>
                 Retry now
               </Button>

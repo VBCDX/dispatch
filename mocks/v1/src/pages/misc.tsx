@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { ago, initials, plural } from '../lib/format'
 import { actions, isExpired, isOnline, me, myWorkspaces, org, orgAgents, orgEvents, principalName, useDB, useNow, wsById } from '../lib/store'
 import { DispatchMark } from '../components/credential'
-import { receiptCounts } from '../components/messages'
+import { fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, LogFeed, PrincipalChip, Tag } from '../components/shared'
 import { Avatar, Button, Card, CloseX, Field, Input, PageTitle, Toggle, cx } from '../components/ui'
 
@@ -78,7 +78,7 @@ export function Home() {
   const events = orgEvents(d).filter((e) => !e.wsId || ws.has(e.wsId))
   const day = msgs.filter((m) => now - m.createdAt < 86_400_000).length
   const waiting = msgs.filter((m) => !isExpired(m, now) && receiptCounts(m).total > receiptCounts(m).acked).length
-  const failing = msgs.filter((m) => m.webhook?.mode === 'fire' && m.webhook.attempts.length && m.webhook.attempts[m.webhook.attempts.length - 1].status >= 300).length
+  const failing = msgs.filter((m) => ['retrying', 'gave up'].includes(fireSummary(m, now, (id) => id)?.short ?? '')).length
   const blocked = events.filter((e) => e.severity === 'blocked' && now - e.at < 86_400_000).length
   const agents = orgAgents(d).filter((a) => a.status === 'active')
   const online = agents.filter(isOnline).length

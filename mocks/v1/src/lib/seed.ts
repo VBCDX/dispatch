@@ -95,10 +95,10 @@ export function populatedDB(): DB {
       tags: ['release-4.2', 'deploy'], audience: { mode: 'only', agentIds: ['agt_deployer'] },
       receipts: { agt_deployer: { deliveredAt: now - 44 * MIN, readAt: now - 40 * MIN, ackAt: now - 12 * MIN } },
       webhook: {
-        mode: 'fire', url: 'https://ci.acme.dev/hooks/smoke-suite', trigger: 'all-ack', authUser: 'dispatch', authSet: true, firedAt: now - 12 * MIN,
+        mode: 'fire', url: 'https://ci.acme.dev/hooks/smoke-suite', trigger: 'all-ack', authUser: 'dispatch', authSet: true, firedAt: now - 12 * MIN, outcome: 'delivered', outcomeAt: now - 11 * MIN,
         attempts: [
-          { id: 'wa_1', at: now - 12 * MIN, status: 503, ms: 2040, trk: 'trk_wh0005a1', note: 'CI returned 503 — retrying in 30 s' },
-          { id: 'wa_2', at: now - 11 * MIN, status: 200, ms: 188, trk: 'trk_wh0005a2' },
+          { id: 'wa_1', at: now - 12 * MIN, status: 503, ms: 2040, trk: 'trk_wh0005a1', note: 'CI returned 503 — attempt 2 of 4 in 30 s' },
+          { id: 'wa_2', at: now - 11 * MIN - 30_000, status: 200, ms: 188, trk: 'trk_wh0005a2', note: 'Retry 1 of 3' },
         ],
       },
     },
