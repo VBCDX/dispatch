@@ -67,6 +67,17 @@ export function filteredReason(d: DB, w: Workspace, msg: Pick<Message, 'author'>
   return null
 }
 
+/**
+ * What an agent can see of a workspace's messages: what is addressed to it
+ * and not filtered for it, plus what it wrote itself. The inbox, search and
+ * GET /messages/{id} all apply this one rule. Humans see everything.
+ */
+export function visibleToAgent(m: Pick<Message, 'author' | 'receipts'>, agentId: string) {
+  if (m.author.kind === 'agent' && m.author.id === agentId) return true
+  const r = m.receipts[agentId]
+  return !!r && !r.filtered
+}
+
 export function audienceLabel(d: DB, aud: Audience) {
   const names = (ids: string[]) => ids.map((id) => d.agents.find((a) => a.id === id)?.label ?? id).join(', ')
   if (aud.mode === 'all') return 'All agents'

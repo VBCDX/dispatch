@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { clock, initials } from '../lib/format'
-import { actorKey, actorLabel, useDB, wsLabel } from '../lib/store'
+import { actorKey, actorLabel, humanById, useDB, wsLabel } from '../lib/store'
 import type { AuditEvent, Author, Harness } from '../lib/types'
 import { CopyChip } from './credential'
 import { Avatar, Button, ErrorBox, Field, Footer, Input, Modal, SkeletonRows, cx, useFakeLoad } from './ui'
@@ -159,6 +159,7 @@ export function LogRow({ e, compact, expanded, onToggle, fresh }: { e: AuditEven
             {actorLabel(d, e)}
           </span>
           {(e.actorKind === 'agent' || e.actorKind === 'webhook') && !compact && <span className="text-2xs text-zinc-600">{e.actorKind}</span>}
+          {e.viaHumanId && <span className="shrink-0 rounded border border-brass/30 px-1.5 text-2xs text-brass-light" title="A human sent this from the API console with the agent’s credentials">via {humanById(d, e.viaHumanId)?.name ?? e.viaHumanId} · console</span>}
           <span className="text-zinc-600">→</span>
           <span className="truncate text-zinc-400">{e.object}</span>
           {!compact && e.wsId && <span className="shrink-0 text-xs text-zinc-600">· {wsLabel(d, e.wsId)}</span>}
@@ -229,7 +230,7 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
   const filtered = events.filter((e) => {
     if (q) {
       const s = q.toLowerCase()
-      if (![e.trk, e.actor, actorLabel(d, e), e.object, e.type, e.result, e.reason ?? '', e.actorId ?? '', e.wsId ?? ''].some((x) => x.toLowerCase().includes(s))) return false
+      if (![e.trk, e.actor, actorLabel(d, e), e.viaHumanId ? `via ${humanById(d, e.viaHumanId)?.name}` : '', e.object, e.type, e.result, e.reason ?? '', e.actorId ?? '', e.wsId ?? ''].some((x) => x.toLowerCase().includes(s))) return false
     }
     if (type && e.type !== type) return false
     if (actor && actorKey(e) !== actor) return false
@@ -240,9 +241,9 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
     return true
   })
   const exportCsv = () => {
-    const cols = ['time', 'workspace_id', 'workspace', 'type', 'severity', 'actor_kind', 'actor_id', 'actor', 'object', 'result', 'reason', 'tracking_code', 'detail']
+    const cols = ['time', 'workspace_id', 'workspace', 'type', 'severity', 'actor_kind', 'actor_id', 'actor', 'via_human_id', 'object', 'result', 'reason', 'tracking_code', 'detail']
     const body = filtered
-      .map((e) => [new Date(e.at).toISOString(), e.wsId ?? '', wsLabel(d, e.wsId) ?? '', e.type, e.severity, e.actorKind, e.actorId ?? '', actorLabel(d, e), e.object, e.result, e.reason ?? '', e.trk, e.detail ? JSON.stringify(Object.fromEntries(e.detail)) : ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+      .map((e) => [new Date(e.at).toISOString(), e.wsId ?? '', wsLabel(d, e.wsId) ?? '', e.type, e.severity, e.actorKind, e.actorId ?? '', actorLabel(d, e), e.viaHumanId ?? '', e.object, e.result, e.reason ?? '', e.trk, e.detail ? JSON.stringify(Object.fromEntries(e.detail)) : ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
       .join('\n')
     const url = URL.createObjectURL(new Blob([cols.join(',') + '\n' + body], { type: 'text/csv' }))
     const a = document.createElement('a')

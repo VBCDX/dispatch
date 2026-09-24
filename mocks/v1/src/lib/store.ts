@@ -44,7 +44,7 @@ const subscribe = (l: () => void) => {
 export const useDB = () => useSyncExternalStore(subscribe, getDB)
 
 export function useNow(ms = 15_000) {
-  const [now, setNow] = useState(Date.now())
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), ms)
     // Any data change (an expiry, a receipt) also refreshes the clock, so derived states never lag behind it.
@@ -385,15 +385,16 @@ export const actions = {
     })
     return id
   },
-  updateWorkspace(id: string, patch: Partial<Pick<Workspace, 'name' | 'description' | 'defaultExpiryHours' | 'retentionDays'>>) {
+  updateWorkspace(id: string, patch: Partial<Pick<Workspace, 'name' | 'description' | 'defaultExpiryHours' | 'retentionDays'>>, by?: Actor) {
     update((d) => {
       const w = wsById(d, id)
-      if (!w) return
+      if (!w || !mayAdmin(d, id, by)) return
+      const a = who(d, by)
       const changed = (Object.keys(patch) as (keyof typeof patch)[]).filter((k) => patch[k] !== w[k])
       if (!changed.length) return
       const before = changed.map((k) => `${k} ${String(w[k])}`).join(', ')
       Object.assign(w, patch)
-      log(d, { wsId: id, object: `Changed ${w.name} settings · ${changed.map((k) => `${k} → ${String(w[k])}`).join(', ')}`, detail: [['Before', before]] })
+      log(d, { ...a.ev, wsId: id, object: `Changed ${w.name} settings · ${changed.map((k) => `${k} → ${String(w[k])}`).join(', ')}${a.asAdmin}`, detail: [['Before', before], ...a.detail] })
     })
   },
   deleteWorkspace(id: string) {
@@ -472,6 +473,9 @@ export const actions = {
       m.prevTokenUntil = m.tokenRevoked ? undefined : Date.now() + TOKEN_GRACE
       m.tokenLast4 = token.slice(-4)
       m.tokenRevoked = false
+      const old = sessionSecrets.get(`ws:${wsId}:${agentId}`)
+      if (old && m.prevTokenLast4) sessionSecrets.set(`ws-prev:${wsId}:${agentId}`, old)
+      else sessionSecrets.delete(`ws-prev:${wsId}:${agentId}`)
       sessionSecrets.set(`ws:${wsId}:${agentId}`, token)
       ok = true
       log(d, { ...a.ev, wsId, object: `Rotated ${agentById(d, agentId)?.label}'s workspace token → ••••${m.tokenLast4}${a.asAdmin}`, result: m.prevTokenLast4 ? `Old ••••${m.prevTokenLast4} works until ${clock(m.prevTokenUntil!)}` : 'Done' })
@@ -528,6 +532,9 @@ export const actions = {
       a.prevTokenLast4 = a.tokenLast4
       a.prevTokenUntil = Date.now() + TOKEN_GRACE
       a.tokenLast4 = token.slice(-4)
+      const old = sessionSecrets.get(`agent:${id}`)
+      if (old) sessionSecrets.set(`agent-prev:${id}`, old)
+      else sessionSecrets.delete(`agent-prev:${id}`)
       sessionSecrets.set(`agent:${id}`, token)
       ok = true
       log(d, { ...w.ev, object: `Rotated agent token for ${a.label} → ••••${a.tokenLast4}`, result: `Old ••••${a.prevTokenLast4} works until ${clock(a.prevTokenUntil)}`, detail: [['Agent ID', a.id], ...w.detail] })
@@ -594,14 +601,15 @@ export const actions = {
   },
 
   /* Messages */
-  postMessage(m: { wsId: string; body: string; payload?: string; tags: string[]; audience: Audience; expiresInHours: number | null; parentId?: string; webhook?: { mode: 'fire'; url: string; trigger: FireTrigger; authUser: string; authSet: boolean } | { mode: 'listen'; authUser: string } }, as?: Principal) {
+  postMessage(m: { wsId: string; body: string; payload?: string; tags: string[]; audience: Audience; expiresInHours: number | null; parentId?: string; webhook?: { mode: 'fire'; url: string; trigger: FireTrigger; authUser: string; authSet: boolean } | { mode: 'listen'; authUser: string } }, as?: Actor) {
     const id = shortId('msg')
     let hookPassword: string | null = null
     let listenUrl: string | null = null
     update((d) => {
       const w = wsById(d, m.wsId)
       if (!w) return
-      const author = as ?? { kind: 'human' as const, id: d.currentUserId }
+      if (!mayWrite(d, m.wsId, as)) return
+      const author: Principal = as ? { kind: as.kind, id: as.id } : { kind: 'human', id: d.currentUserId }
       let webhook: Webhook | undefined
       if (m.webhook?.mode === 'fire') webhook = { ...m.webhook, attempts: [] }
       if (m.webhook?.mode === 'listen') {
@@ -610,7 +618,7 @@ export const actions = {
         listenUrl = `https://hooks.dispatch.dev/l/lsn_${shortId('lsn').slice(4)}`
         webhook = { mode: 'listen', url: listenUrl, authUser: m.webhook.authUser, passwordLast4: hookPassword.slice(-4), calls: [] }
       }
-      const msg: Message = { id, wsId: m.wsId, author, body: m.body, payload: m.payload || undefined, tags: m.tags, audience: m.audience, createdAt: Date.now(), expiresAt: m.expiresInHours ? Date.now() + m.expiresInHours * HOUR : null, parentId: m.parentId, receipts: {}, webhook, trk: trackingCode() }
+      const msg: Message = { id, wsId: m.wsId, author, body: m.body, payload: m.payload || undefined, tags: m.tags, audience: m.audience, createdAt: Date.now(), expiresAt: m.expiresInHours ? Date.now() + m.expiresInHours * HOUR : null, parentId: m.parentId, receipts: {}, webhook, trk: trackingCode(), ...(as?.kind === 'agent' && as.viaHumanId ? { sentVia: { channel: 'api-console' as const, humanId: as.viaHumanId } } : {}) }
       initReceipts(d, w, msg)
       d.messages.push(msg)
       const rs = Object.values(msg.receipts)
@@ -620,9 +628,7 @@ export const actions = {
         wsId: w.id,
         type: 'message',
         severity: 'ok',
-        actor: principalName(d, author),
-        actorKind: author.kind,
-        actorId: author.id,
+        ...who(d, as).ev,
         object: `Posted to ${w.name}${m.tags.length ? ' · ' + m.tags.map((t) => '#' + t).join(' ') : ''}`,
         result: `For ${queued} agent${queued === 1 ? '' : 's'}${filtered ? ` · ${filtered} filtered` : ''}`,
         trk: msg.trk,
@@ -729,23 +735,43 @@ export const actions = {
       maybeFire(d, m)
     })
   },
-  /** Records an API call in the audit log, allowed or refused. */
-  logApiCall(e: { agentId: string; wsId?: string; line: string; allowed: boolean; reason?: string | null; status: number }) {
+  /** Records an API call in the audit log, allowed or refused — with the human who sent it from the console. */
+  logApiCall(e: { agentId: string; wsId?: string; line: string; allowed: boolean; reason?: string | null; rule?: string; status: number; viaHumanId?: string }) {
     update((d) => {
       const a = agentById(d, e.agentId)
+      const h = humanById(d, e.viaHumanId)
       log(d, {
         wsId: e.wsId,
         type: e.allowed ? 'access' : 'blocked',
-        severity: e.allowed ? 'ok' : 'blocked',
+        severity: e.allowed ? (e.status >= 400 ? 'warn' : 'ok') : 'blocked',
         actor: a?.label ?? e.agentId,
         actorKind: 'agent',
         actorId: e.agentId,
+        viaHumanId: e.viaHumanId,
         object: e.line,
         result: e.allowed ? `${e.status}` : `${e.status} · refused`,
-        reason: e.allowed ? undefined : `Blocked: ${e.reason}`,
-        detail: [['Agent ID', e.agentId], ...(e.wsId ? ([['Workspace ID', e.wsId]] as [string, string][]) : []), ['Source', 'API console (prototype)']],
+        reason: e.allowed ? (e.reason ?? undefined) : `Blocked: ${e.reason}`,
+        detail: [['Agent ID', e.agentId], ...(e.wsId ? ([['Workspace ID', e.wsId]] as [string, string][]) : []), ...(e.rule ? ([['Rule', e.rule]] as [string, string][]) : []), ['Source', h ? `API console — sent by ${h.name} (${h.id}) with ${a?.label ?? e.agentId}’s credentials` : 'API']],
       })
     })
+  },
+  /** An agent reads its inbox: access is re-checked, then everything addressed to it here is marked delivered. */
+  deliverInbox(agentId: string, wsId: string) {
+    let delivered = 0
+    let filtered = 0
+    update((d) => {
+      const a = agentById(d, agentId)
+      if (!a || a.status !== 'active') return
+      a.lastSeen = Date.now()
+      filtered = recheckReceipts(d, { wsId, agentId })
+      for (const m of d.messages) {
+        const r = m.receipts[agentId]
+        if (m.wsId !== wsId || !r || r.filtered || r.deliveredAt || isExpired(m)) continue
+        r.deliveredAt = Date.now()
+        delivered++
+      }
+    })
+    return { delivered, filtered }
   },
 
   /* Context */

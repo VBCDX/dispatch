@@ -85,6 +85,17 @@ function WebhookBadge({ m }: { m: Message }) {
   return <Pill tone={open ? 'blue' : 'neutral'}>⇠ listening{open ? '' : ' · closed'} · {plural(h.calls.length, 'call')}</Pill>
 }
 
+/** Marks a message a human sent from the API console with an agent's credentials. */
+function ConsolePill({ humanId }: { humanId: string }) {
+  const d = useDB()
+  const name = d.humans.find((h) => h.id === humanId)?.name ?? humanId
+  return (
+    <span title={`${name} sent this from the API console with the agent’s credentials`}>
+      <Pill className="!py-0">via API console · {name}</Pill>
+    </span>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /* Message card                                                        */
 /* ------------------------------------------------------------------ */
@@ -100,6 +111,7 @@ export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Mess
         <PrincipalChip p={m.author} />
         {m.author.kind === 'human' && <Pill className="!py-0">human</Pill>}
         {m.author.kind === 'webhook' && <Pill tone="blue" className="!py-0">via listener</Pill>}
+        {m.sentVia && <ConsolePill humanId={m.sentVia.humanId} />}
         <span className="text-xs text-zinc-600">→</span>
         <span className="text-xs text-zinc-400">{audienceLabel(d, m.audience)}</span>
         <span className="ml-auto flex items-center gap-2 text-xs text-zinc-500">
@@ -451,7 +463,7 @@ export function Composer({ ws, parent, onSent, compact }: { ws: Workspace; paren
               · {preview.filtered.length} filtered ({preview.filtered.map((f) => agentById(d, f.id)?.label).join(', ')})
             </span>
           )}
-          . Humans in the workspace always see it.
+          . {hasAgents && reachable > 0 ? 'Only they can read it among agents — inbox, search and API alike. ' : ''}Humans in the workspace always see it.
         </div>
         <div className="flex gap-2">
           {compact && (
@@ -495,6 +507,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
     <SlideOver open={!!msgId} onClose={onClose} width={640} title={<span className="flex items-center gap-2.5">Message <span className="font-mono text-xs font-normal text-zinc-500">{m.id}</span></span>}>
       <div className="flex flex-wrap items-center gap-2.5">
         <PrincipalChip p={m.author} withKind />
+        {m.sentVia && <ConsolePill humanId={m.sentVia.humanId} />}
         <span className="text-xs text-zinc-600">→</span>
         <span className="text-xs text-zinc-400">{audienceLabel(d, m.audience)}</span>
         <span className="ml-auto text-xs text-zinc-500">{new Date(m.createdAt).toLocaleString()}</span>
@@ -679,7 +692,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
               onClose={() => setRotating(false)}
               title="Rotate the listener password?"
               rows={[
-                ['Listener', <span className="font-mono">{hook.url.split('/').pop()}</span>],
+                ['Listener', <span key="l" className="font-mono">{hook.url.split('/').pop()}</span>],
                 ['Current password', `${maskHookPassword(hook.passwordLast4)} — stops working now`, 'amber'],
                 ['Open until', m.expiresAt ? new Date(m.expiresAt).toLocaleString() : '—'],
               ]}
@@ -702,6 +715,7 @@ export function MessageDrawer({ msgId, onClose, ws }: { msgId: string | null; on
               <div className="flex items-center gap-2 text-xs">
                 <PrincipalChip p={r.author} size={18} />
                 {r.author.kind === 'webhook' && <Pill tone="blue" className="!py-0">via listener</Pill>}
+                {r.sentVia && <ConsolePill humanId={r.sentVia.humanId} />}
                 <span className="ml-auto text-zinc-500">{ago(r.createdAt, now).toLowerCase()}</span>
               </div>
               <div className="mt-1.5 text-[13px] whitespace-pre-wrap text-zinc-200">{r.body}</div>

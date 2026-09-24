@@ -155,6 +155,8 @@ export interface Message {
   receipts: Record<string, Receipt>
   webhook?: Webhook
   trk: string
+  /** Sent from the API console: a human used the author agent's credentials. */
+  sentVia?: { channel: 'api-console'; humanId: string }
 }
 
 export interface ContextNote {
