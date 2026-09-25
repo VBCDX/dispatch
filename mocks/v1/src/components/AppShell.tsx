@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
-import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import { actions, agentById, getDB, iAmActive, me, org, statusIn, useDB, wsById } from '../lib/store'
 import { DispatchMark } from './credential'
+import { OrgSwitcher } from './OrgSwitcher'
 import { Sidebar } from './Sidebar'
 import { Button } from './ui'
 
@@ -32,7 +33,6 @@ export function AppShell() {
 
 function OrgGate() {
   const d = useDB()
-  const nav = useNavigate()
   const u = me(d)
   const o = org(d)
   const status = statusIn(u, d.currentOrgId)
@@ -60,24 +60,8 @@ function OrgGate() {
         )}
         {others.length > 0 && (
           <div className="mt-5 border-t border-line pt-4">
-            <div className="eyebrow-sm mb-2">Your other organizations</div>
-            <div className="flex flex-col gap-1.5">
-              {others.map((x) => (
-                <button
-                  key={x.id}
-                  type="button"
-                  onClick={() => {
-                    // Leave the current record's URL first, so it doesn't pull us back into this org.
-                    nav('/')
-                    actions.switchOrg(x.id)
-                  }}
-                  className="flex items-center justify-between rounded-lg border border-edge px-3 py-2 text-left text-[13px] text-zinc-200 hover:border-zinc-600"
-                >
-                  <span>Go to {x.name}</span>
-                  <span className="text-2xs text-zinc-500">{statusIn(u, x.id) === 'active' ? u?.roles[x.id] : statusIn(u, x.id)}</span>
-                </button>
-              ))}
-            </div>
+            <div className="eyebrow-sm mb-2">Switch organization</div>
+            <OrgSwitcher />
           </div>
         )}
       </div>

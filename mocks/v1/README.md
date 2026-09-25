@@ -80,7 +80,9 @@ humans are members of workspaces in the same way.
   People, Agents, Audit or workspaces — just the invitation to accept.
 - **Suspension is per organization.** It's stored on the person's membership in one organization, checked only there,
   and logged only there. Suspended in one org, a person keeps working in any other; resuming them in one org never
-  touches another. The sidebar's organization switcher marks the orgs where you're suspended. The populated scenario
+  touches another. The organization switcher — the org box at the top of the sidebar, a dropdown — lists your orgs with your role, marks
+  the ones where you're suspended or invited (invitations in their own *Pending invitations* group), checks the current
+  one, and lands on the chosen org's Home. The suspended/invited gate uses the same switcher. The populated scenario
   has a second organization, **Northwind Labs** (Owner: Leo Park), where Mia is also a user.
 - **Records belong to their organization.** A workspace, agent or message opened by ID resolves its own org: if you
   belong to that org, Dispatch switches to it (so its suspended gate and your roles there apply); otherwise you get
