@@ -224,10 +224,16 @@ export function WsMessages() {
   }
 
   // Search, tags, author and state apply to each message on its own — parent or reply; a thread shows when its parent
-  // or any reply matches, and matching replies are highlighted with their thread open. The webhook filter is about the
-  // thread itself, so it applies to the thread's first message only.
+  // or any reply matches, and matching replies are highlighted with their thread open. The webhook filter matches a
+  // thread when its first message or any reply has the chosen webhook ("Without" means none of them does).
   const filtering = !!(q.trim() || tags.length || author || state)
-  const hookOk = (m: Message) => !hook || (hook === 'with' ? !!m.webhook : hook === 'without' ? !m.webhook : m.webhook?.mode === hook)
+  const hookIs = (m: Message) => (hook === 'with' || hook === 'without' ? !!m.webhook : m.webhook?.mode === hook)
+  const hookOk = (m: Message) => {
+    if (!hook) return true
+    const any = hookIs(m) || descendantsOf(m.id).some(hookIs)
+    return hook === 'without' ? !any : any
+  }
+  const hookReplyIds = new Set(hook && hook !== 'without' ? all.filter((m) => m.parentId && hookIs(m)).map((m) => m.id) : [])
   const matches = (m: Message) => {
     if (tags.length && !tags.every((t) => m.tags.includes(t))) return false
     if (author && `${m.author.kind}:${m.author.id}` !== author) return false
@@ -239,10 +245,12 @@ export function WsMessages() {
     if (s && ![m.body.toLowerCase(), m.id.toLowerCase(), m.trk, m.payload?.toLowerCase() ?? '', ...m.tags].some((x) => x.includes(s))) return false
     return true
   }
-  const matchIds = new Set(filtering ? all.filter(matches).map((m) => m.id) : [])
+  const textIds = new Set(filtering ? all.filter(matches).map((m) => m.id) : [])
+  // Highlighted replies: those matching the text filters, plus replies carrying the chosen webhook.
+  const matchIds = new Set([...textIds, ...hookReplyIds])
   const list = all
     .filter((m) => !m.parentId)
-    .filter((m) => (showExpired || !isExpired(m, now)) && hookOk(m) && (!filtering || matchIds.has(m.id) || descendantsOf(m.id).some((r) => matchIds.has(r.id))))
+    .filter((m) => (showExpired || !isExpired(m, now)) && hookOk(m) && (!filtering || textIds.has(m.id) || descendantsOf(m.id).some((r) => textIds.has(r.id))))
     .sort((a, b) => b.createdAt - a.createdAt)
   // A thread's default (open with ≤2 replies) is captured the first time it's shown, so a thread that was shown open
   // never collapses by itself when more replies arrive. The person's own toggle always wins.
@@ -251,7 +259,7 @@ export function WsMessages() {
   useEffect(() => {
     if (unseen.length) setFirstShown((f) => ({ ...f, ...Object.fromEntries(unseen.map((m) => [m.id, descendantsOf(m.id).length <= 2])) }))
   }, [unseen.map((m) => m.id).join()]) // eslint-disable-line react-hooks/exhaustive-deps
-  const isExpanded = (m: Message) => expandedMap[m.id] ?? ((filtering && descendantsOf(m.id).some((r) => matchIds.has(r.id))) || (firstShown[m.id] ?? descendantsOf(m.id).length <= 2))
+  const isExpanded = (m: Message) => expandedMap[m.id] ?? (((filtering || hookReplyIds.size > 0) && descendantsOf(m.id).some((r) => matchIds.has(r.id))) || (firstShown[m.id] ?? descendantsOf(m.id).length <= 2))
 
   const toggleTag = (t: string) => setTags(tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t])
   const close = () => {
@@ -279,14 +287,14 @@ export function WsMessages() {
             <option value="unread">Not read by everyone</option>
             <option value="mine">Sent by me</option>
           </select>
-          <select aria-label="Webhook" title="Matches the thread’s first message (the webhook belongs to the thread)" value={hook} onChange={(e) => setHook(e.target.value as HookFilter)} className="rounded-lg border border-edge bg-panel px-3 py-2 text-sm2 text-zinc-400 outline-none">
+          <select aria-label="Webhook" title="Matches a thread when its first message or any reply has the webhook" value={hook} onChange={(e) => setHook(e.target.value as HookFilter)} className="rounded-lg border border-edge bg-panel px-3 py-2 text-sm2 text-zinc-400 outline-none">
             <option value="">Any webhook</option>
             <option value="with">With webhook</option>
             <option value="fire">— Fire</option>
             <option value="listen">— Listen</option>
             <option value="without">Without webhook</option>
           </select>
-          {hook && <span className="text-2xs text-zinc-500">Webhook filter matches the thread’s first message</span>}
+          {hook && <span className="text-2xs text-zinc-500">{hook === 'without' ? 'Threads with no webhook on any message' : 'Matches the thread’s first message or any reply'}</span>}
           <Checkbox checked={showExpired} onChange={setShowExpired} label={<span className="text-xs">Show expired</span>} />
         </div>
         {tags.length > 0 && (
@@ -308,7 +316,7 @@ export function WsMessages() {
                 onOpen={() => setOpen(m.id)}
                 onTag={toggleTag}
                 activeTags={tags}
-                thread={{ childrenOf, expanded: isExpanded(m), onToggle: () => setExpandedMap({ ...expandedMap, [m.id]: !isExpanded(m) }), matchIds: filtering ? matchIds : undefined, onOpenReply: (id) => setOpen(id) }}
+                thread={{ childrenOf, expanded: isExpanded(m), onToggle: () => setExpandedMap({ ...expandedMap, [m.id]: !isExpanded(m) }), matchIds: filtering || hookReplyIds.size ? matchIds : undefined, onOpenReply: (id) => setOpen(id) }}
               />
             ))
           )}

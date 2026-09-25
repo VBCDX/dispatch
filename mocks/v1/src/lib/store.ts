@@ -755,10 +755,13 @@ export const actions = {
       const changed: { read?: boolean; write?: boolean } = {}
       if (f.read !== a.filters.read) changed.read = f.read
       if (f.write !== a.filters.write) changed.write = f.write
-      a.filters = { ...f, ...coupleReadWrite(a.filters, changed) }
+      const next = { ...f, ...coupleReadWrite(a.filters, changed) }
+      // A no-op save writes nothing and logs nothing.
+      if (show(next) === before) return
+      a.filters = next
       const n = recheckReceipts(d, { agentId: id })
       const w = who(d, by)
-      log(d, { orgId: a.orgId,  ...w.ev, detail: [['Agent ID', a.id], ['Before', before], ['After', show(f)], ...w.detail], object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${recheckNote(n)}` })
+      log(d, { orgId: a.orgId,  ...w.ev, detail: [['Agent ID', a.id], ['Before', before], ['After', show(next)], ...w.detail], object: `Updated ${a.label}'s own filters · read ${next.read ? 'on' : 'off'} · write ${next.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${recheckNote(n)}` })
     })
   },
   renameAgent(id: string, label: string) {
