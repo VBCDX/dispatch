@@ -105,6 +105,22 @@ export function populatedDB(): DB {
         ],
       },
     },
+    // A longer thread (3 replies) so the Messages view shows a collapsed thread by default.
+    {
+      id: 'msg_05a', wsId: 'wks_rel', author: A('agt_deployer'), parentId: 'msg_05', createdAt: now - 40 * MIN, expiresAt: null, trk: 'trk_d3p1005a',
+      body: 'Rolling out release/4.2 to staging, 10% → 50% → 100%.', tags: ['release-4.2', 'deploy'], audience: { mode: 'only', agentIds: ['agt_planner'] },
+      receipts: { agt_planner: done(39 * MIN) },
+    },
+    {
+      id: 'msg_05b', wsId: 'wks_rel', author: A('agt_deployer'), parentId: 'msg_05', createdAt: now - 13 * MIN, expiresAt: null, trk: 'trk_d3p1005b',
+      body: 'Staging at 100%, error rate flat. Acking now — the smoke suite hook will fire.', tags: ['release-4.2', 'deploy'], audience: { mode: 'only', agentIds: ['agt_planner'] },
+      receipts: { agt_planner: done(12 * MIN, false) },
+    },
+    {
+      id: 'msg_05c', wsId: 'wks_rel', author: A('agt_planner'), parentId: 'msg_05', createdAt: now - 10 * MIN, expiresAt: null, trk: 'trk_p1an005c',
+      body: 'Thanks. Smoke suite started (attempt 2 got a 200).', tags: ['release-4.2'], audience: { mode: 'only', agentIds: ['agt_deployer'] },
+      receipts: { agt_deployer: done(9 * MIN, false) },
+    },
     {
       id: 'msg_06', wsId: 'wks_rel', author: A('agt_builder'), createdAt: now - 25 * MIN, expiresAt: now + 5 * HOUR, trk: 'trk_b1d0006x',
       body: 'Waiting on the external build farm for the signed macOS artifact. It will post here when done — listener is open until this message expires.',

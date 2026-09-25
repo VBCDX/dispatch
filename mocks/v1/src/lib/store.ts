@@ -5,7 +5,7 @@ import { freshDB, populatedDB } from './seed'
 import type { PersonStatus, Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, Harness, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
 
 const LS_KEY = 'dispatch-mocks-v1'
-const VERSION = 5
+const VERSION = 6
 
 function load(): DB {
   try {

@@ -188,7 +188,8 @@ export function WorkspaceDetail() {
 /* ------------------------------------------------------------------ */
 /* Messages tab                                                        */
 /* ------------------------------------------------------------------ */
-type StateFilter = '' | 'waiting' | 'unread' | 'webhook' | 'mine'
+type StateFilter = '' | 'waiting' | 'unread' | 'mine'
+type HookFilter = '' | 'with' | 'fire' | 'listen' | 'without'
 export function WsMessages() {
   const d = useDB()
   const w = useWorkspace()
@@ -200,13 +201,17 @@ export function WsMessages() {
   const [author, setAuthor] = useState('')
   const [state, setState] = useState<StateFilter>('')
   const [showExpired, setShowExpired] = useState(true)
+  const [hook, setHook] = useState<HookFilter>('')
+  // Thread expansion the person chose; otherwise the default below applies.
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({})
   useEffect(() => {
     const m = params.get('m')
     if (m) setOpen(m)
   }, [params])
 
   const all = d.messages.filter((m) => m.wsId === w.id)
-  const replies = (id: string) => all.filter((m) => m.parentId === id).length
+  const childrenOf = (id: string) => all.filter((m) => m.parentId === id).sort((a, b) => a.createdAt - b.createdAt)
+  const descendantsOf = (id: string): Message[] => childrenOf(id).flatMap((r) => [r, ...descendantsOf(r.id)])
   const tagCounts = useMemo(() => {
     const c: Record<string, number> = {}
     for (const m of all) for (const t of m.tags) c[t] = (c[t] ?? 0) + 1
@@ -218,25 +223,29 @@ export function WsMessages() {
     return kind === 'agent' ? (agentById(d, id)?.label ?? id) : kind === 'webhook' ? `listener ${id}` : (d.humans.find((h) => h.id === id)?.name ?? id)
   }
 
+  // Every filter applies to each message on its own — parent or reply. A thread shows when its parent or any reply
+  // matches; matching replies are highlighted and their thread opens.
+  const filtering = !!(q.trim() || tags.length || author || state || hook)
+  const matches = (m: Message) => {
+    if (tags.length && !tags.every((t) => m.tags.includes(t))) return false
+    if (author && `${m.author.kind}:${m.author.id}` !== author) return false
+    const c = receiptCounts(m, now)
+    if (state === 'waiting' && !(c.total > c.acked && !isExpired(m, now))) return false
+    if (state === 'unread' && !(c.total > c.read && !isExpired(m, now))) return false
+    if (state === 'mine' && !(m.author.kind === 'human' && m.author.id === d.currentUserId)) return false
+    if (hook === 'with' && !m.webhook) return false
+    if ((hook === 'fire' || hook === 'listen') && m.webhook?.mode !== hook) return false
+    if (hook === 'without' && m.webhook) return false
+    const s = q.trim().toLowerCase()
+    if (s && ![m.body.toLowerCase(), m.id.toLowerCase(), m.trk, m.payload?.toLowerCase() ?? '', ...m.tags].some((x) => x.includes(s))) return false
+    return true
+  }
+  const matchIds = new Set(filtering ? all.filter(matches).map((m) => m.id) : [])
   const list = all
     .filter((m) => !m.parentId)
-    .filter((m) => {
-      if (!showExpired && isExpired(m, now)) return false
-      if (tags.length && !tags.every((t) => m.tags.includes(t))) return false
-      if (author && `${m.author.kind}:${m.author.id}` !== author) return false
-      const c = receiptCounts(m, now)
-      if (state === 'waiting' && !(c.total > c.acked && !isExpired(m, now))) return false
-      if (state === 'unread' && !(c.total > c.read && !isExpired(m, now))) return false
-      if (state === 'webhook' && !m.webhook) return false
-      if (state === 'mine' && !(m.author.kind === 'human' && m.author.id === d.currentUserId)) return false
-      if (q) {
-        const s = q.toLowerCase()
-        const thread = all.filter((x) => x.parentId === m.id)
-        if (![m, ...thread].some((x) => x.body.toLowerCase().includes(s) || x.id.includes(s) || x.trk.includes(s) || x.tags.some((t) => t.includes(s)))) return false
-      }
-      return true
-    })
+    .filter((m) => (showExpired || !isExpired(m, now)) && (!filtering || matchIds.has(m.id) || descendantsOf(m.id).some((r) => matchIds.has(r.id))))
     .sort((a, b) => b.createdAt - a.createdAt)
+  const isExpanded = (m: Message) => expandedMap[m.id] ?? (filtering && descendantsOf(m.id).some((r) => matchIds.has(r.id)) ? true : descendantsOf(m.id).length <= 2)
 
   const toggleTag = (t: string) => setTags(tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t])
   const close = () => {
@@ -262,8 +271,14 @@ export function WsMessages() {
             <option value="">Any state</option>
             <option value="waiting">Waiting on an ack</option>
             <option value="unread">Not read by everyone</option>
-            <option value="webhook">Has a webhook</option>
             <option value="mine">Sent by me</option>
+          </select>
+          <select aria-label="Webhook" value={hook} onChange={(e) => setHook(e.target.value as HookFilter)} className="rounded-lg border border-edge bg-panel px-3 py-2 text-sm2 text-zinc-400 outline-none">
+            <option value="">Any webhook</option>
+            <option value="with">With webhook</option>
+            <option value="fire">— Fire</option>
+            <option value="listen">— Listen</option>
+            <option value="without">Without webhook</option>
           </select>
           <Checkbox checked={showExpired} onChange={setShowExpired} label={<span className="text-xs">Show expired</span>} />
         </div>
@@ -279,7 +294,16 @@ export function WsMessages() {
           {list.length === 0 ? (
             <Card className="p-10 text-center text-[13px] text-zinc-400">{all.length ? 'Nothing matches. Clear a filter to see more.' : 'No messages yet. Write the first one — agents that aren’t connected will get it when they are.'}</Card>
           ) : (
-            list.map((m: Message) => <MessageCard key={m.id} m={m} replies={replies(m.id)} onOpen={() => setOpen(m.id)} onTag={toggleTag} activeTags={tags} />)
+            list.map((m: Message) => (
+              <MessageCard
+                key={m.id}
+                m={m}
+                onOpen={() => setOpen(m.id)}
+                onTag={toggleTag}
+                activeTags={tags}
+                thread={{ childrenOf, expanded: isExpanded(m), onToggle: () => setExpandedMap({ ...expandedMap, [m.id]: !isExpanded(m) }), matchIds: filtering ? matchIds : undefined, onOpenReply: (id) => setOpen(id) }}
+              />
+            ))
           )}
         </ListBody>
       </div>

@@ -109,7 +109,11 @@ function ConsolePill({ humanId }: { humanId: string }) {
 /* ------------------------------------------------------------------ */
 /* Message card                                                        */
 /* ------------------------------------------------------------------ */
-export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Message; onOpen: () => void; replies: number; onTag?: (t: string) => void; activeTags?: string[] }) {
+/** A message's thread, for nesting under its card: direct replies, expansion, and which replies match the filters. */
+export type ThreadView = { childrenOf: (id: string) => Message[]; expanded: boolean; onToggle: () => void; matchIds?: Set<string>; onOpenReply: (id: string) => void }
+const descendants = (id: string, childrenOf: (id: string) => Message[]): Message[] => childrenOf(id).flatMap((r) => [r, ...descendants(r.id, childrenOf)])
+
+export function MessageCard({ m, onOpen, thread, onTag, activeTags }: { m: Message; onOpen: () => void; thread?: ThreadView; onTag?: (t: string) => void; activeTags?: string[] }) {
   const d = useDB()
   const now = useNow(10_000)
   const c = receiptCounts(m, now)
@@ -139,11 +143,6 @@ export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Mess
         <WebhookBadge m={m} />
         <span className={cx('text-xs', expired ? 'text-zinc-500' : soon ? 'text-amber-400' : 'text-zinc-500')}>{m.expiresAt ? (expired ? 'Expired' : `Expires ${until(m.expiresAt, now).toLowerCase()}`) : 'No expiry'}</span>
         <span className="ml-auto flex items-center gap-3">
-          {replies > 0 && (
-            <button type="button" onClick={onOpen} className="text-xs text-signal hover:text-signal-light">
-              {plural(replies, 'reply', 'replies')}
-            </button>
-          )}
           <CopyChip value={m.trk} />
         </span>
       </footer>
@@ -158,7 +157,76 @@ export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Mess
           <ReceiptPills m={m} />
         </button>
       )}
+      {thread && <ThreadBlock m={m} thread={thread} now={now} />}
     </article>
+  )
+}
+
+/** Replies nested under their parent: a toggle with the count and the latest reply, then compact replies. */
+function ThreadBlock({ m, thread, now }: { m: Message; thread: ThreadView; now: number }) {
+  const d = useDB()
+  const all = descendants(m.id, thread.childrenOf)
+  if (!all.length) return null
+  const latest = all.reduce((a, b) => (b.createdAt > a.createdAt ? b : a))
+  const listId = `thread-${m.id}`
+  return (
+    <div className="mt-2.5 border-t border-line pt-2">
+      <button type="button" aria-expanded={thread.expanded} aria-controls={listId} onClick={thread.onToggle} className="flex items-center gap-2 text-xs text-signal hover:text-signal-light">
+        <span aria-hidden className="w-2.5 text-[10px]">{thread.expanded ? '▾' : '▸'}</span>
+        {plural(all.length, 'reply', 'replies')}
+        <span className="text-zinc-500">
+          · latest by {principalName(d, latest.author)} {ago(latest.createdAt, now).toLowerCase()}
+        </span>
+      </button>
+      {thread.expanded && (
+        <div id={listId} className="mt-2 flex flex-col gap-2 border-l border-line pl-3">
+          {thread.childrenOf(m.id).map((r) => (
+            <ReplyItem key={r.id} r={r} thread={thread} now={now} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** One reply in compact form — its own receipts, tags and webhook badge — with its own replies nested beneath. */
+function ReplyItem({ r, thread, now }: { r: Message; thread: ThreadView; now: number }) {
+  const c = receiptCounts(r, now)
+  const kids = thread.childrenOf(r.id)
+  const hit = thread.matchIds?.has(r.id)
+  return (
+    <div className={cx('rounded-lg border px-3 py-2', hit ? 'border-signal/50 bg-signal/[0.05]' : 'border-line bg-rail')} data-reply={r.id}>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <PrincipalChip p={r.author} size={16} />
+        {r.author.kind === 'webhook' && <Pill tone="blue" className="!py-0">via listener</Pill>}
+        {r.sentVia && <ConsolePill humanId={r.sentVia.humanId} />}
+        {hit && <span className="text-2xs text-signal-light">matches</span>}
+        <span className="ml-auto text-zinc-500">{ago(r.createdAt, now).toLowerCase()}</span>
+      </div>
+      <button type="button" onClick={() => thread.onOpenReply(r.id)} className="mt-1 line-clamp-3 block w-full text-left text-[13px] whitespace-pre-wrap text-zinc-200 hover:text-white">
+        {r.body}
+      </button>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-zinc-500">
+        {r.tags.map((t) => (
+          <Tag key={t} t={t} />
+        ))}
+        <WebhookBadge m={r} />
+        {c.total + c.filtered > 0 && (
+          <span>
+            Read {c.read}/{c.total} · acked {c.acked}
+            {c.filtered > 0 && ` · ${c.filtered} filtered`}
+          </span>
+        )}
+        {c.total > 0 && <ReceiptPills m={r} max={4} />}
+      </div>
+      {kids.length > 0 && (
+        <div className="mt-2 flex flex-col gap-2 border-l border-line pl-3">
+          {kids.map((k) => (
+            <ReplyItem key={k.id} r={k} thread={thread} now={now} />
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
