@@ -37,7 +37,7 @@ export function freshDB(): DB {
   }
 }
 
-const agent = (now: number, a: Partial<Agent> & Pick<Agent, 'id' | 'label' | 'harness' | 'tokenLast4'>): Agent => ({
+const agent = (now: number, a: Partial<Agent> & Pick<Agent, 'id' | 'label' | 'client' | 'tokenLast4'>): Agent => ({
   orgId: 'org_acme',
   description: '',
   status: 'active',
@@ -104,6 +104,22 @@ export function populatedDB(): DB {
           { id: 'wa_2', at: now - 11 * MIN - 30_000, status: 200, ms: 188, trk: 'trk_wh0005a2', note: 'Retry 1 of 3' },
         ],
       },
+    },
+    // A longer thread (3 replies) so the Messages view shows a collapsed thread by default.
+    {
+      id: 'msg_05a', wsId: 'wks_rel', author: A('agt_deployer'), parentId: 'msg_05', createdAt: now - 40 * MIN, expiresAt: null, trk: 'trk_d3p1005a',
+      body: 'Rolling out release/4.2 to staging, 10% → 50% → 100%.', tags: ['release-4.2', 'deploy'], audience: { mode: 'only', agentIds: ['agt_planner'] },
+      receipts: { agt_planner: done(39 * MIN) },
+    },
+    {
+      id: 'msg_05b', wsId: 'wks_rel', author: A('agt_deployer'), parentId: 'msg_05', createdAt: now - 13 * MIN, expiresAt: null, trk: 'trk_d3p1005b',
+      body: 'Staging at 100%, error rate flat. Acking now — the smoke suite hook will fire.', tags: ['release-4.2', 'deploy'], audience: { mode: 'only', agentIds: ['agt_planner'] },
+      receipts: { agt_planner: done(12 * MIN, false) },
+    },
+    {
+      id: 'msg_05c', wsId: 'wks_rel', author: A('agt_planner'), parentId: 'msg_05', createdAt: now - 10 * MIN, expiresAt: null, trk: 'trk_p1an005c',
+      body: 'Thanks. Smoke suite started (attempt 2 got a 200).', tags: ['release-4.2'], audience: { mode: 'only', agentIds: ['agt_deployer'] },
+      receipts: { agt_deployer: done(9 * MIN, false) },
     },
     {
       id: 'msg_06', wsId: 'wks_rel', author: A('agt_builder'), createdAt: now - 25 * MIN, expiresAt: now + 5 * HOUR, trk: 'trk_b1d0006x',
@@ -200,13 +216,13 @@ export function populatedDB(): DB {
       { id: 'u_leo', name: 'Leo Park', email: 'leo@northwind.dev', roles: { org_nw: 'Owner' }, orgStatus: { org_nw: 'active' }, lastActive: now - 3 * HOUR, sessions: [{ device: 'Linux desktop', place: 'Portland', at: now - 3 * HOUR }] },
     ],
     agents: [
-      agent(now, { id: 'agt_planner', label: 'planner', harness: 'Claude Code', tokenLast4: 'Pn7w', description: 'Breaks releases into tasks and keeps the checklist current.' }),
-      agent(now, { id: 'agt_builder', label: 'builder', harness: 'Codex', tokenLast4: 'Bd2k', description: 'Cuts branches, runs CI, reports test results.' }),
-      agent(now, { id: 'agt_reviewer', label: 'reviewer', harness: 'OpenCode', tokenLast4: 'Rv8q', description: 'Security and code review.', filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: ['agt_scraper'] } }),
-      agent(now, { id: 'agt_deployer', label: 'deployer', harness: 'Claude Code', tokenLast4: 'Dp4m', description: 'Ships to staging and prod; watches rollouts.', filters: { read: true, write: true, workspaceBlocklist: ['wks_sbx'], agentBlocklist: [] } }),
-      agent(now, { id: 'agt_scraper', label: 'web-scraper', harness: 'Other', tokenLast4: 'Ws1x', description: 'Collects release notes from vendor sites. Read-only by its own choice.', createdBy: 'Ravi Mehta', createdById: 'u_ravi', filters: { read: true, write: false, workspaceBlocklist: [], agentBlocklist: [] } }),
-      agent(now, { id: 'agt_docs', orgId: 'org_nw', label: 'docs-bot', harness: 'OpenCode', tokenLast4: 'Dx3v', createdBy: 'Leo Park', createdById: 'u_leo', description: 'Keeps the Northwind docs site in sync with releases.' }),
-      agent(now, { id: 'agt_triage', label: 'triage-bot', harness: 'Codex', tokenLast4: 'Tr5z', status: 'suspended', lastSeen: now - 3 * DAY, connected: false, description: 'Labels incoming incidents. Suspended while its prompt is rewritten.' }),
+      agent(now, { id: 'agt_planner', label: 'planner', client: { name: 'Claude Code', version: '2.1.4', via: 'MCP' }, tokenLast4: 'Pn7w', description: 'Breaks releases into tasks and keeps the checklist current.' }),
+      agent(now, { id: 'agt_builder', label: 'builder', client: { name: 'Codex', version: '0.44.0', via: 'MCP' }, tokenLast4: 'Bd2k', description: 'Cuts branches, runs CI, reports test results.' }),
+      agent(now, { id: 'agt_reviewer', label: 'reviewer', client: { name: 'OpenCode', version: '0.9.2', via: 'MCP' }, tokenLast4: 'Rv8q', description: 'Security and code review.', filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: ['agt_scraper'] } }),
+      agent(now, { id: 'agt_deployer', label: 'deployer', client: { name: 'Claude Code', version: '2.1.4', via: 'MCP' }, tokenLast4: 'Dp4m', description: 'Ships to staging and prod; watches rollouts.', filters: { read: true, write: true, workspaceBlocklist: ['wks_sbx'], agentBlocklist: [] } }),
+      agent(now, { id: 'agt_scraper', label: 'web-scraper', client: { name: 'REST', via: 'REST' }, tokenLast4: 'Ws1x', description: 'Collects release notes from vendor sites. Read-only by its own choice.', createdBy: 'Ravi Mehta', createdById: 'u_ravi', filters: { read: true, write: false, workspaceBlocklist: [], agentBlocklist: [] } }),
+      agent(now, { id: 'agt_docs', orgId: 'org_nw', label: 'docs-bot', client: { name: 'OpenCode', version: '0.9.2', via: 'MCP' }, tokenLast4: 'Dx3v', createdBy: 'Leo Park', createdById: 'u_leo', description: 'Keeps the Northwind docs site in sync with releases.' }),
+      agent(now, { id: 'agt_triage', label: 'triage-bot', client: { name: 'Codex', version: '0.44.0', via: 'MCP' }, tokenLast4: 'Tr5z', status: 'suspended', lastSeen: now - 3 * DAY, connected: false, description: 'Labels incoming incidents. Suspended while its prompt is rewritten.' }),
     ],
     workspaces: [
       {

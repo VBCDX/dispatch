@@ -1,6 +1,6 @@
 import { evaluate, visibleToAgent } from './access'
 import type { Endpoint, PathParam } from './api'
-import { actions, agentById, fireState, getDB, defaultAdmins, explicitHumanAdmins, humanById, isActive, isExpired, mayExpire, mayRotateListener, receiptState, sessionSecret, wsById, type Actor } from './store'
+import { actions, agentById, coupleReadWrite, fireState, getDB, defaultAdmins, explicitHumanAdmins, humanById, isActive, isExpired, mayExpire, mayRotateListener, receiptState, sessionSecret, wsById, type Actor } from './store'
 import type { Agent, Audience, DB, FireTrigger, Message, Workspace } from './types'
 
 /*
@@ -21,6 +21,7 @@ export type ConsoleRequest = {
 }
 export type ConsoleResponse = { status: number; body: unknown }
 
+const READ_WRITE_422 = 'read: false with write: true is contradictory — writing without reading isn’t allowed. Send read: false alone (it turns write off too), or write: true alone (it turns read on too).'
 type Fail = { status: number; error: string; message: string; rule?: string; field?: string }
 const fail = (status: number, error: string, message: string, extra: Partial<Fail> = {}): Fail => ({ status, error, message, ...extra })
 const iso = (t: number | null | undefined) => (t ? new Date(t).toISOString() : null)
@@ -143,19 +144,22 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
 
   /* ---------------- Agent-only flows ---------------- */
   if (!needsWs) {
-    if (ep.id === 'me') return ok(200, { id: a.id, label: a.label, harness: a.harness, status: a.status, filters: filtersJson(a) })
+    if (ep.id === 'me') return ok(200, { id: a.id, label: a.label, client: a.client ?? null, status: a.status, filters: filtersJson(a) })
     if (ep.id === 'my-workspaces') {
       const d = getDB()
       const list = d.workspaces.filter((x) => x.orgId === a.orgId && x.members.some((m) => m.kind === 'agent' && m.id === a.id))
       return ok(200, { workspaces: list.map((x) => { const r = evaluate(d, a.id, x.id, 'read'); const m = x.members.find((mm) => mm.id === a.id)!; return { id: x.id, name: x.name, role: m.role, read: r.allowed, write: evaluate(d, a.id, x.id, 'write').allowed, blocked: r.allowed ? null : r.reason } }) })
     }
     if (ep.id === 'filters') {
-      const f = { ...a.filters }
-      for (const [k, key] of [['read', 'read'], ['write', 'write']] as const) {
+      // Only the fields in the body are coupled (read off ⇒ write off; write on ⇒ read on), then merged.
+      const rw: { read?: boolean; write?: boolean } = {}
+      for (const k of ['read', 'write'] as const) {
         if (body[k] === undefined) continue
         if (typeof body[k] !== 'boolean') return refuse(fail(422, 'invalid_field', `${k} must be true or false.`, { field: k }))
-        f[key] = body[k] as boolean
+        rw[k] = body[k] as boolean
       }
+      if (rw.read === false && rw.write === true) return refuse(fail(422, 'read_write_coupled', READ_WRITE_422, { field: 'write' }))
+      const f = { ...a.filters, ...coupleReadWrite(a.filters, rw) }
       for (const [k, key, kind] of [['workspace_blocklist', 'workspaceBlocklist', 'wks'], ['agent_blocklist', 'agentBlocklist', 'agt']] as const) {
         if (body[k] === undefined) continue
         const v = body[k]
@@ -171,7 +175,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
     if (ep.id === 'heartbeat') {
       const before = getDB()
       const wasOnline = agentById(before, a.id)!.connected
-      actions.connectAgent(a.id)
+      actions.connectAgent(a.id, true, { name: 'REST', via: 'REST' })
       const d = getDB()
       const filtered = d.messages.filter((m) => m.receipts[a.id]?.filteredAt && m.receipts[a.id].filteredAt! >= Date.now() - 1000).length
       return ok(200, { online: true, was_online: wasOnline, queued_now: d.messages.filter((m) => m.receipts[a.id] && !m.receipts[a.id].filtered && !m.receipts[a.id].deliveredAt && !isExpired(m)).length, filtered_now: filtered })
@@ -387,6 +391,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
         patch[k] = body[k] as boolean
       }
       if (!Object.keys(patch).length) return refuse(fail(422, 'empty_patch', 'Send at least one of role, read, write.'))
+      if (patch.read === false && patch.write === true) return refuse(fail(422, 'read_write_coupled', READ_WRITE_422, { field: 'write' }))
       if (m.kind === 'human' && patch.read === false) return refuse(fail(422, 'humans_always_read', 'Humans in a workspace always read every message.', { field: 'read' }))
       actions.setMember(wsId, p, patch, by)
       const w2 = wsById(getDB(), wsId)!

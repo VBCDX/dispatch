@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { clock, initials } from '../lib/format'
 import { accessImpact, ALREADY_DELIVERED, actorKey, actorLabel, humanById, me, useDB, wsLabel } from '../lib/store'
 import type { DB } from '../lib/types'
-import type { AuditEvent, Author, Harness } from '../lib/types'
+import type { AgentClient, AuditEvent, Author } from '../lib/types'
 import { CopyChip } from './credential'
 import { Avatar, Button, ErrorBox, Field, Footer, Input, Modal, SkeletonRows, cx, useFakeLoad } from './ui'
 
@@ -123,13 +123,14 @@ export function accessImpactRows(d: DB, agentId: string, wsId: string | undefine
 }
 
 /* ------------------------------------------------------------------ */
-/* Principals: humans are round, agents are square with their harness. */
+/* Principals: humans are round, agents are square with the client they report. */
 /* ------------------------------------------------------------------ */
-const HARNESS_MARK: Record<Harness, string> = { 'Claude Code': 'CC', Codex: 'CX', OpenCode: 'OC', Other: '··' }
-export function AgentGlyph({ harness, size = 22, dim }: { harness: Harness; size?: number; dim?: boolean }) {
+const CLIENT_MARK: Record<string, string> = { 'Claude Code': 'CC', Codex: 'CX', OpenCode: 'OC', REST: '{}' }
+export function AgentGlyph({ client, size = 22, dim }: { client?: AgentClient | null; size?: number; dim?: boolean }) {
+  const mark = !client ? '··' : (CLIENT_MARK[client.name] ?? client.name.replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase())
   return (
-    <span title={harness} style={{ width: size, height: size, minWidth: size, fontSize: size > 26 ? 11 : 9 }} className={cx('inline-flex items-center justify-center rounded-md border font-mono font-semibold', dim ? 'border-edge bg-line text-zinc-500' : 'border-signal/30 bg-signal/10 text-signal-light')}>
-      {HARNESS_MARK[harness]}
+    <span title={client ? `Reported client: ${client.name}${client.version ? ` ${client.version}` : ''} (${client.via})` : 'No client reported yet'} style={{ width: size, height: size, minWidth: size, fontSize: size > 26 ? 11 : 9 }} className={cx('inline-flex items-center justify-center rounded-md border font-mono font-semibold', dim ? 'border-edge bg-line text-zinc-500' : 'border-signal/30 bg-signal/10 text-signal-light')}>
+      {mark}
     </span>
   )
 }
@@ -151,7 +152,7 @@ export function PrincipalChip({ p, size = 22, withKind, className }: { p: Author
     const a = d.agents.find((x) => x.id === p.id)
     return (
       <span className={cx('inline-flex min-w-0 items-center gap-2', className)}>
-        <AgentGlyph harness={a?.harness ?? 'Other'} size={size} dim={a?.status !== 'active'} />
+        <AgentGlyph client={a?.client} size={size} dim={a?.status !== 'active'} />
         <span className={cx('truncate font-mono text-[12.5px]', a?.status !== 'active' ? 'text-zinc-500' : 'text-zinc-200')}>{a?.label ?? p.id}</span>
         {withKind && <span className="text-2xs text-zinc-600">agent</span>}
       </span>

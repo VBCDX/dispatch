@@ -80,7 +80,9 @@ humans are members of workspaces in the same way.
   People, Agents, Audit or workspaces — just the invitation to accept.
 - **Suspension is per organization.** It's stored on the person's membership in one organization, checked only there,
   and logged only there. Suspended in one org, a person keeps working in any other; resuming them in one org never
-  touches another. The sidebar's organization switcher marks the orgs where you're suspended. The populated scenario
+  touches another. The organization switcher — the org box at the top of the sidebar, a dropdown — lists your orgs with your role, marks
+  the ones where you're suspended or invited (invitations in their own *Pending invitations* group), checks the current
+  one, and lands on the chosen org's Home. The suspended/invited gate uses the same switcher. The populated scenario
   has a second organization, **Northwind Labs** (Owner: Leo Park), where Mia is also a user.
 - **Records belong to their organization.** A workspace, agent or message opened by ID resolves its own org: if you
   belong to that org, Dispatch switches to it (so its suspended gate and your roles there apply); otherwise you get
@@ -90,12 +92,22 @@ humans are members of workspaces in the same way.
   *registered by* is audit only), admin rights they delegated stand, and their messages stay under their name.
   Creator fields (*registered by*, *added by*, *delegated by*) are permanent audit fields and never grant rights —
   who can manage something comes only from the org role and workspace role.
+- Read and Write are coupled for agents: turning Read off also turns Write off, and turning Write on while Read is
+  off turns Read on — in the Members tab, over the API, and in an agent's own filters. One audit row records both.
 - Delegating admin, removing admin, turning Read or Write off, rotating a token, removing a member, suspending an
   agent and blocking an agent all show an impact preview first.
 - **Humans** in a workspace always **see, search and post to every message**, whoever it was addressed to. The
   audience only controls which *agents* receive it. A human's write access can be turned off to make them
   read-only (no posting, retrying webhooks or editing shared context); their read access can't be. Org
   Owners and userAdmins always write.
+
+### Agents report their client
+
+Registering an agent asks only for a name and a description. The client isn't asked for: when an agent connects it
+reports its MCP client info (e.g. *Claude Code 2.1.4 · MCP*) or *REST*, and that report is what Dispatch shows,
+labelled as reported — *Not connected yet* until then. REST calls never overwrite an MCP client's info; they're
+recorded as the *last transport*. It's informational only; membership and access never depend
+on it.
 
 ### Two credentials, two flows
 
@@ -205,8 +217,8 @@ switch persona, pause the simulated agents, or force every list into its loading
 
 | # | Flow | Where to go |
 |---|---|---|
-| 1 | **Golden path: a durable message** | Controls › *New org*. Follow the Home checklist: create a workspace → register two agents (Claude Code + Codex) → add both (a workspace token is shown once for each) → send a message to *all agents* with a tag and a *fire when all ack* webhook. It's **queued** because nobody is connected. Open **Connect** › Download config (the file has both tokens filled in) and the agent connects about 4 s later. Connect the second agent too, then watch the receipts move to read and acknowledged, and the webhook fire with a 200. Tokens live only in this tab: after a reload the button reads *Download template — missing …*; rotate right there to get a working file. |
-| 2 | **Addressing and receipts** | *Release train* › Messages. Compare the *All agents*, *Only deployer* and *All agents except web-scraper* messages. Filter by tag chips, open any message to see the per-agent receipt table and the delivered, read and acknowledged lists. |
+| 1 | **Golden path: a durable message** | Controls › *New org*. Follow the Home checklist: create a workspace → register two agents (just a name each — no harness to pick) → add both (a workspace token is shown once for each) → send a message to *all agents* with a tag and a *fire when all ack* webhook. It's **queued** because nobody is connected. Open **Connect** › Download config for its client (the file has both tokens filled in) and the agent connects about 4 s later, reporting its client — the Agents page shows it as *reported*. Connect the second agent too, then watch the receipts move to read and acknowledged, and the webhook fire with a 200. Tokens live only in this tab: after a reload the button reads *Download template — missing …*; rotate right there to get a working file. |
+| 2 | **Addressing and receipts** | *Release train* › Messages. Compare the *All agents*, *Only deployer* and *All agents except web-scraper* messages. Filter by tag chips, open any message to see the per-agent receipt table and the delivered, read and acknowledged lists. Replies nest under their parent (threads with more than 2 replies start collapsed, showing the count and the latest reply); filters and search match replies too and open the thread at the match. The *Webhook* filter narrows to threads whose first message has a webhook (fire or listen), or doesn't. |
 | 3 | **Fire webhook** | The planner → deployer message fires `ci.acme.dev/hooks/smoke-suite` on ack. Attempt 1 got a 503 and the retry got a 200. The **Webhooks** tab lists every webhook, and a failing one gets a banner. Send one to a URL containing `fail` to watch the scheduled retries (30 s, 2 min, 10 min) and *gave up*; address it only to a blocked agent, or expire it, to see *won't fire*. |
 | 4 | **Listener** | The builder's *waiting on the build farm* message has a 401 call (wrong password) and a 202 call that was appended to its thread by `lsn_8Kq2vT`. Use *Simulate a call* or *Simulate a wrong password*, *Rotate password*, or *Expire now* and then call it again to get a 410. Compose your own with Webhook › Listen and you get the URL and the one-time password. |
 | 5 | **Delegation** | Members: planner (an **agent**) and Ravi are admins delegated by Dana. Delegate or remove admin from the ⋯ menu (each shows an impact preview). Remove admin from Ravi, then from Dana: the preview says Dana Keller and Ravi Mehta (org admins) become the workspace's default admins, the Members tab lists them as *Default admin*, and Audit records the fallback — planner stays admin but never the only one. On **People**, the last Owner is protected; transfer ownership to Ravi, switch to Ravi, and remove Dana: her agents, the admin rights she delegated and her messages all stay. The audit log shows planner adding deployer *as delegated admin*; to produce such rows yourself, use Try it as planner (Flow 8) on the admin endpoints. |

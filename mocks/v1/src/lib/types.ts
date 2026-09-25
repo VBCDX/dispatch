@@ -23,7 +23,10 @@ export interface Human {
   sessions: { device: string; place: string; at: number }[]
 }
 
+/** Config formats the Connect page can write. Not a property of the agent. */
 export type Harness = 'Claude Code' | 'Codex' | 'OpenCode' | 'Other'
+/** What an agent reports about itself when it connects: its MCP client info, or REST. Never asked for, never used for access. */
+export type AgentClient = { name: string; version?: string; via: 'MCP' | 'REST'; at?: number }
 
 /** An agent's own permission filters. They apply everywhere and beat anything a workspace grants. */
 export interface AgentFilters {
@@ -39,7 +42,12 @@ export interface Agent {
   id: string // public agent ID, e.g. agt_7Hq2
   orgId: string
   label: string
-  harness: Harness
+  /** Reported by the agent when it connects; null until it has. Membership never depends on it. */
+  client: AgentClient | null
+  /** The transport of the agent's latest connection or call (REST calls never overwrite the MCP client info). */
+  lastTransport?: { via: 'MCP' | 'REST'; at: number }
+  /** The config format last downloaded for it on the Connect page — the prototype's guess for a first simulated connect. */
+  configFormat?: string
   description: string
   tokenLast4: string
   /** After a rotation the previous token keeps working until prevTokenUntil. */

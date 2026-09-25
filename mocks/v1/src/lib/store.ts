@@ -2,10 +2,10 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { accessVerdict, evaluate, targets } from './access'
 import { HOUR, MIN, clock, newAgentToken, newHookPassword, newWsToken, shortId, trackingCode, uid } from './format'
 import { freshDB, populatedDB } from './seed'
-import type { PersonStatus, Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, Harness, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
+import type { PersonStatus, Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, AgentClient, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
 
 const LS_KEY = 'dispatch-mocks-v1'
-const VERSION = 5
+const VERSION = 7
 
 function load(): DB {
   try {
@@ -126,6 +126,8 @@ export const explicitHumanAdmins = (d: DB, w: Workspace) => w.members.filter((m)
 export const defaultAdmins = (d: DB, w: Workspace) => (explicitHumanAdmins(d, w).length ? [] : orgAdmins(d))
 
 export const isOnline = (a: Agent) => a.status === 'active' && a.connected
+/** The client an agent reported when it last connected, e.g. "Claude Code 2.1.4 · MCP", or "Not connected yet". */
+export const clientLabel = (a: Agent | undefined) => (a?.client ? `${a.client.via === 'REST' ? 'REST' : `${a.client.name}${a.client.version ? ` ${a.client.version}` : ''} · MCP`}` : 'Not connected yet')
 
 export const isExpired = (m: Message, now = Date.now()) => m.expiresAt != null && m.expiresAt <= now
 export type ReceiptState = 'queued' | 'held' | 'delivered' | 'read' | 'acked' | 'filtered' | 'expired'
@@ -429,6 +431,21 @@ function webhookTick(d: DB, now: number) {
   }
 }
 
+/**
+ * Writing without reading makes no sense: turning read off also turns write off, and turning write on while
+ * read is off turns read on too. Applies to memberships (UI and API) and to an agent's own filters.
+ */
+export function coupleReadWrite<T extends { read?: boolean; write?: boolean }>(cur: { read: boolean; write: boolean }, patch: T): T {
+  const next = { ...patch }
+  const read = patch.read ?? cur.read
+  const write = patch.write ?? cur.write
+  if (patch.read === false && write) next.write = false
+  else if (patch.write === true && !read) next.read = true
+  else if (patch.read === undefined && patch.write === undefined) return next
+  else if (!read && write) next.write = false
+  return next
+}
+
 /* ------------------------------------------------------------------ */
 /* Who acts                                                            */
 /* ------------------------------------------------------------------ */
@@ -612,7 +629,7 @@ export const actions = {
       const was = m.role
       const access = (x: Pick<Membership, 'read' | 'write'>) => [x.read && 'read', x.write && 'write'].filter(Boolean).join(' + ') || 'none'
       const before = access(m)
-      Object.assign(m, patch)
+      Object.assign(m, coupleReadWrite(m, patch))
       if (m.kind === 'human') m.read = true
       if (patch.role === 'admin' && was !== 'admin') {
         m.delegatedBy = a.ev.actor
@@ -685,14 +702,14 @@ export const actions = {
   },
 
   /* Agents */
-  createAgent(a: { label: string; harness: Harness; description: string }) {
+  createAgent(a: { label: string; description: string }) {
     const token = newAgentToken()
     const id = shortId('agt')
     sessionSecrets.set(`agent:${id}`, token)
     update((d) => {
       if (!isOrgAdmin(d) || labelTaken(d, a.label)) return
-      d.agents.push({ id, orgId: d.currentOrgId, label: a.label, harness: a.harness, description: a.description, tokenLast4: token.slice(-4), status: 'active', createdAt: Date.now(), createdBy: me(d).name, createdById: d.currentUserId, lastSeen: null, connected: false, filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: [] } })
-      log(d, { object: `Registered agent ${a.label} (${a.harness}) · ${id}` })
+      d.agents.push({ id, orgId: d.currentOrgId, label: a.label, client: null, description: a.description, tokenLast4: token.slice(-4), status: 'active', createdAt: Date.now(), createdBy: me(d).name, createdById: d.currentUserId, lastSeen: null, connected: false, filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: [] } })
+      log(d, { object: `Registered agent ${a.label} · ${id}` })
     })
     return { id, token }
   },
@@ -734,7 +751,11 @@ export const actions = {
       const show = (x: AgentFilters) =>
         `read ${x.read ? 'on' : 'off'} · write ${x.write ? 'on' : 'off'} · blocked workspaces: ${x.workspaceBlocklist.map((w) => wsById(d, w)?.name ?? w).join(', ') || 'none'} · blocked authors: ${x.agentBlocklist.map((g) => agentById(d, g)?.label ?? g).join(', ') || 'none'}`
       const before = show(a.filters)
-      a.filters = f
+      // Couple only what changed, so "write on" from read-off turns read on instead of being undone by the old read.
+      const changed: { read?: boolean; write?: boolean } = {}
+      if (f.read !== a.filters.read) changed.read = f.read
+      if (f.write !== a.filters.write) changed.write = f.write
+      a.filters = { ...f, ...coupleReadWrite(a.filters, changed) }
       const n = recheckReceipts(d, { agentId: id })
       const w = who(d, by)
       log(d, { orgId: a.orgId,  ...w.ev, detail: [['Agent ID', a.id], ['Before', before], ['After', show(f)], ...w.detail], object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${recheckNote(n)}` })
@@ -750,13 +771,20 @@ export const actions = {
     })
   },
   /** Prototype: the agent opens its MCP session / starts polling. Queued messages get delivered. */
-  connectAgent(id: string, on = true) {
+  /** The agent connects and reports its client (MCP clientInfo, or REST); the report is stored as-is, for display only. */
+  connectAgent(id: string, on = true, client?: AgentClient) {
     update((d) => {
       const a = agentById(d, id)
       if (!a || a.status !== 'active') return
       a.connected = on
       a.lastSeen = Date.now()
       if (!on) return
+      // An MCP session reports clientInfo — that's the client we keep. A REST call is recorded as the latest transport
+      // only; it never overwrites the MCP client info (an agent that has only ever used REST reports "REST").
+      const via = client?.via ?? a.client?.via ?? 'REST'
+      if (client?.via === 'MCP') a.client = { ...client, at: Date.now() }
+      else if (!a.client) a.client = { name: 'REST', via: 'REST', at: Date.now() }
+      a.lastTransport = { via, at: Date.now() }
       // Delivery re-checks access: whatever changed while the agent was away decides now.
       const filtered = recheckReceipts(d, { agentId: id })
       let n = 0
@@ -767,7 +795,15 @@ export const actions = {
           n++
         }
       }
-      log(d, { orgId: a.orgId,  type: 'access', severity: 'ok', actor: a.label, actorKind: 'agent', actorId: id, object: `Connected over ${a.harness === 'Other' ? 'REST' : 'MCP'}`, result: (n ? `${n} queued message${n === 1 ? '' : 's'} delivered` : 'Nothing queued') + recheckNote(filtered) })
+      log(d, { orgId: a.orgId,  type: 'access', severity: 'ok', actor: a.label, actorKind: 'agent', actorId: id, object: `Connected over ${via}${via === 'MCP' ? ` · reports ${a.client.name}${a.client.version ? ` ${a.client.version}` : ''}` : ''}`, result: (n ? `${n} queued message${n === 1 ? '' : 's'} delivered` : 'Nothing queued') + recheckNote(filtered) })
+    })
+  },
+
+  /** Remembers which config format was downloaded for an agent (prototype convenience, not audited). */
+  noteConfigFormat(id: string, format: string) {
+    update((d) => {
+      const a = agentById(d, id)
+      if (a) a.configFormat = format
     })
   },
 

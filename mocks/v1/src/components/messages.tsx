@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { accessVerdict, audienceLabel, targets } from '../lib/access'
 import { ago, clock, maskHookPassword, plural, until } from '../lib/format'
@@ -7,7 +7,7 @@ import type { Audience, FireTrigger, Message, Workspace } from '../lib/types'
 import { CopyChip, SECRET_LINE, SecretField } from './credential'
 import { showSecret } from '../lib/secrets'
 import { ImpactDialog, LogRow, PrincipalChip, Tag } from './shared'
-import { Button, Callout, Checkbox, Field, Footer, Input, Pill, Segmented, Select, SlideOver, Textarea, Toggle, cx } from './ui'
+import { Button, Callout, Checkbox, Field, Footer, Input, Pill, Segmented, Select, SlideOver, Textarea, Toggle, cx, useLayer } from './ui'
 
 /* ------------------------------------------------------------------ */
 /* Receipts — tracked per agent                                        */
@@ -109,7 +109,11 @@ function ConsolePill({ humanId }: { humanId: string }) {
 /* ------------------------------------------------------------------ */
 /* Message card                                                        */
 /* ------------------------------------------------------------------ */
-export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Message; onOpen: () => void; replies: number; onTag?: (t: string) => void; activeTags?: string[] }) {
+/** A message's thread, for nesting under its card: direct replies, expansion, and which replies match the filters. */
+export type ThreadView = { childrenOf: (id: string) => Message[]; expanded: boolean; onToggle: () => void; matchIds?: Set<string>; onOpenReply: (id: string) => void }
+const descendants = (id: string, childrenOf: (id: string) => Message[]): Message[] => childrenOf(id).flatMap((r) => [r, ...descendants(r.id, childrenOf)])
+
+export function MessageCard({ m, onOpen, thread, onTag, activeTags }: { m: Message; onOpen: () => void; thread?: ThreadView; onTag?: (t: string) => void; activeTags?: string[] }) {
   const d = useDB()
   const now = useNow(10_000)
   const c = receiptCounts(m, now)
@@ -139,11 +143,6 @@ export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Mess
         <WebhookBadge m={m} />
         <span className={cx('text-xs', expired ? 'text-zinc-500' : soon ? 'text-amber-400' : 'text-zinc-500')}>{m.expiresAt ? (expired ? 'Expired' : `Expires ${until(m.expiresAt, now).toLowerCase()}`) : 'No expiry'}</span>
         <span className="ml-auto flex items-center gap-3">
-          {replies > 0 && (
-            <button type="button" onClick={onOpen} className="text-xs text-signal hover:text-signal-light">
-              {plural(replies, 'reply', 'replies')}
-            </button>
-          )}
           <CopyChip value={m.trk} />
         </span>
       </footer>
@@ -158,7 +157,76 @@ export function MessageCard({ m, onOpen, replies, onTag, activeTags }: { m: Mess
           <ReceiptPills m={m} />
         </button>
       )}
+      {thread && <ThreadBlock m={m} thread={thread} now={now} />}
     </article>
+  )
+}
+
+/** Replies nested under their parent: a toggle with the count and the latest reply, then compact replies. */
+function ThreadBlock({ m, thread, now }: { m: Message; thread: ThreadView; now: number }) {
+  const d = useDB()
+  const all = descendants(m.id, thread.childrenOf)
+  if (!all.length) return null
+  const latest = all.reduce((a, b) => (b.createdAt > a.createdAt ? b : a))
+  const listId = `thread-${m.id}`
+  return (
+    <div className="mt-2.5 border-t border-line pt-2">
+      <button type="button" aria-expanded={thread.expanded} aria-controls={listId} onClick={thread.onToggle} className="flex items-center gap-2 text-xs text-signal hover:text-signal-light">
+        <span aria-hidden className="w-2.5 text-[10px]">{thread.expanded ? '▾' : '▸'}</span>
+        {plural(all.length, 'reply', 'replies')}
+        <span className="text-zinc-500">
+          · latest by {principalName(d, latest.author)} {ago(latest.createdAt, now).toLowerCase()}
+        </span>
+      </button>
+      {thread.expanded && (
+        <div id={listId} className="mt-2 flex flex-col gap-2 border-l border-line pl-3">
+          {thread.childrenOf(m.id).map((r) => (
+            <ReplyItem key={r.id} r={r} thread={thread} now={now} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** One reply in compact form — its own receipts, tags and webhook badge — with its own replies nested beneath. */
+function ReplyItem({ r, thread, now }: { r: Message; thread: ThreadView; now: number }) {
+  const c = receiptCounts(r, now)
+  const kids = thread.childrenOf(r.id)
+  const hit = thread.matchIds?.has(r.id)
+  return (
+    <div className={cx('rounded-lg border px-3 py-2', hit ? 'border-signal/50 bg-signal/[0.05]' : 'border-line bg-rail')} data-reply={r.id}>
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <PrincipalChip p={r.author} size={16} />
+        {r.author.kind === 'webhook' && <Pill tone="blue" className="!py-0">via listener</Pill>}
+        {r.sentVia && <ConsolePill humanId={r.sentVia.humanId} />}
+        {hit && <span className="text-2xs text-signal-light">matches</span>}
+        <span className="ml-auto text-zinc-500">{ago(r.createdAt, now).toLowerCase()}</span>
+      </div>
+      <button type="button" onClick={() => thread.onOpenReply(r.id)} className="mt-1 line-clamp-3 block w-full text-left text-[13px] whitespace-pre-wrap text-zinc-200 hover:text-white">
+        {r.body}
+      </button>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-zinc-500">
+        {r.tags.map((t) => (
+          <Tag key={t} t={t} />
+        ))}
+        <WebhookBadge m={r} />
+        {c.total + c.filtered > 0 && (
+          <span>
+            Read {c.read}/{c.total} · acked {c.acked}
+            {c.filtered > 0 && ` · ${c.filtered} filtered`}
+          </span>
+        )}
+        {c.total > 0 && <ReceiptPills m={r} max={4} />}
+      </div>
+      {kids.length > 0 && (
+        <div className="mt-2 flex flex-col gap-2 border-l border-line pl-3">
+          {kids.map((k) => (
+            <ReplyItem key={k.id} r={k} thread={thread} now={now} />
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -183,22 +251,117 @@ export function AudiencePicker({ ws, value, onChange }: { ws: Workspace; value: 
         ]}
       />
       {value.mode !== 'all' && (
-        <div className="flex flex-wrap gap-1.5">
-          {agentMembers.map((a) => {
-            const on = ids.includes(a.id)
+        <AgentMultiSelect
+          label={value.mode === 'only' ? 'Only these agents' : 'All agents except'}
+          tone={value.mode === 'only' ? 'include' : 'exclude'}
+          options={agentMembers.map((a) => {
+            // Say why an agent can't receive, before its connection state: a blocked agent is never "online" here.
+            const v = accessVerdict(d, ws, { author: { kind: 'human', id: d.currentUserId } }, a)
+            return { id: a.id, label: a.label, sub: v ? (v.final ? v.cause : `held — ${v.cause}`) : isOnline(a) ? 'online' : 'offline', warn: !!v }
+          })}
+          value={ids}
+          onChange={(agentIds) => onChange({ mode: value.mode as 'only' | 'except', agentIds })}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Searchable multi-select: a combobox with chips. Type to filter, ↑/↓ to move, Enter to add or remove, Backspace on
+ * an empty field removes the last chip, Escape closes. Scales to many agents where a row of buttons wouldn't.
+ */
+export function AgentMultiSelect({ label, options, value, onChange, tone = 'include' }: { label: string; options: { id: string; label: string; sub?: string; warn?: boolean }[]; value: string[]; onChange: (ids: string[]) => void; tone?: 'include' | 'exclude' }) {
+  const [q, setQ] = useState('')
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(0)
+  const baseId = useId()
+  const wrap = useRef<HTMLDivElement>(null)
+  useLayer(open, () => setOpen(false))
+  useEffect(() => {
+    if (!open) return
+    const h = (e: MouseEvent) => !wrap.current?.contains(e.target as Node) && setOpen(false)
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+  const shown = options.filter((o) => o.label.toLowerCase().includes(q.trim().toLowerCase()) || o.id.includes(q.trim().toLowerCase()))
+  const at = Math.min(active, Math.max(0, shown.length - 1))
+  const activeId = open && shown[at] ? `${baseId}-${shown[at].id}` : undefined
+  // Keep the active option visible while moving with the keyboard.
+  useEffect(() => {
+    if (activeId) document.getElementById(activeId)?.scrollIntoView({ block: 'nearest' })
+  }, [activeId])
+  const toggle = (id: string) => onChange(value.includes(id) ? value.filter((x) => x !== id) : [...value, id])
+  const nameOf = (id: string) => options.find((o) => o.id === id)?.label ?? id
+  const chip = tone === 'include' ? 'border-signal/50 bg-signal/15 text-signal-light' : 'border-red-500/40 bg-red-500/10 text-red-400'
+  return (
+    <div ref={wrap} className="relative flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-zinc-700 bg-page px-2 py-1.5 focus-within:border-zinc-500">
+        {value.map((id) => (
+          <span key={id} className={cx('inline-flex items-center gap-1 rounded-md border px-1.5 py-px font-mono text-2xs', chip)}>
+            <span className={cx(tone === 'exclude' && 'line-through')}>{nameOf(id)}</span>
+            <button type="button" aria-label={`Remove ${nameOf(id)}`} className="text-zinc-500 hover:text-zinc-200" onClick={() => toggle(id)}>
+              ✕
+            </button>
+          </span>
+        ))}
+        <input
+          role="combobox"
+          aria-label={label}
+          aria-expanded={open}
+          aria-controls={`${baseId}-list`}
+          aria-autocomplete="list"
+          aria-activedescendant={open && shown[at] ? `${baseId}-${shown[at].id}` : undefined}
+          value={q}
+          placeholder={value.length ? 'Add another…' : 'Search agents…'}
+          onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
+          onChange={(e) => {
+            setQ(e.target.value)
+            setActive(0)
+            setOpen(true)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault()
+              setOpen(true)
+              setActive((i) => (shown.length ? (Math.min(i, shown.length - 1) + (e.key === 'ArrowDown' ? 1 : shown.length - 1)) % shown.length : 0))
+            } else if (e.key === 'Enter' && open && shown[at]) {
+              e.preventDefault()
+              toggle(shown[at].id)
+              setQ('')
+            } else if (e.key === 'Backspace' && !q && value.length) onChange(value.slice(0, -1))
+            else if (e.key === 'Tab') setOpen(false)
+          }}
+          className="min-w-24 flex-1 bg-transparent font-mono text-xs text-zinc-200 outline-none placeholder:font-sans placeholder:text-zinc-600"
+        />
+      </div>
+      <div className="text-2xs text-zinc-500" aria-live="polite">
+        {plural(value.length, 'agent')} {tone === 'include' ? 'selected' : 'excluded'}
+      </div>
+      {open && (
+        <ul id={`${baseId}-list`} role="listbox" aria-label={label} aria-multiselectable className="absolute top-full right-0 left-0 z-30 mt-1 max-h-48 list-none overflow-y-auto rounded-lg border border-edge bg-panel p-1 pl-1 shadow-xl">
+          {shown.map((o, i) => {
+            const on = value.includes(o.id)
             return (
-              <button
-                key={a.id}
-                type="button"
-                aria-pressed={on}
-                onClick={() => onChange({ mode: value.mode, agentIds: on ? ids.filter((x) => x !== a.id) : [...ids, a.id] })}
-                className={cx('rounded-md border px-2 py-0.5 font-mono text-xs', on ? (value.mode === 'only' ? 'border-signal/50 bg-signal/15 text-signal-light' : 'border-red-500/40 bg-red-500/10 text-red-400 line-through') : 'border-edge text-zinc-400 hover:text-zinc-200')}
+              <li
+                key={o.id}
+                id={`${baseId}-${o.id}`}
+                role="option"
+                aria-selected={on}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => toggle(o.id)}
+                className={cx('flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs', i === at ? 'bg-line text-zinc-100' : 'text-zinc-300')}
               >
-                {a.label}
-              </button>
+                <span className={cx('flex size-3.5 items-center justify-center rounded border text-[9px]', on ? 'border-zinc-300 bg-zinc-100 text-zinc-900' : 'border-zinc-600')}>{on ? '✓' : ''}</span>
+                <span className="font-mono">{o.label}</span>
+                {o.sub && <span className={cx('ml-auto text-2xs', o.warn ? 'text-amber-400' : 'text-zinc-500')}>{o.sub}</span>}
+              </li>
             )
           })}
-        </div>
+          {!shown.length && <li className="px-2 py-1 text-xs text-zinc-500">No agent matches “{q}”.</li>}
+        </ul>
       )}
     </div>
   )

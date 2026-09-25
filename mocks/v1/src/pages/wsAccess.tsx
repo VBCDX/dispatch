@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { evaluate, type Op } from '../lib/access'
 import { ago, clock, maskAgentToken, maskWsToken, plural } from '../lib/format'
-import { actions, agentById, canAdmin, defaultAdmins, isActive, statusIn, getDB, isExpired, isOrgAdmin, me, ORG_ADMIN_ROLES, orgAdmins, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
-import type { Harness, Membership, MemberRole, OrgRole, Principal } from '../lib/types'
+import { actions, agentById, canAdmin, clientLabel, defaultAdmins, isActive, statusIn, getDB, isExpired, isOrgAdmin, me, ORG_ADMIN_ROLES, orgAdmins, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
+import type { AgentClient, Harness, Membership, MemberRole, OrgRole, Principal } from '../lib/types'
 import { CopyChip, DispatchMark, KeyholeIcon } from '../components/credential'
 import { showSecret } from '../lib/secrets'
 import { accessImpactRows, ImpactDialog, PrincipalChip } from '../components/shared'
@@ -78,7 +78,7 @@ export function WsMembers() {
               <div className="min-w-0">
                 <PrincipalChip p={p(m)} withKind />
                 <div className="mt-0.5 pl-[30px] text-2xs text-zinc-600">
-                  {a ? `${a.id} · ${a.harness} · ${isOnline(a) ? 'online' : a.status !== 'active' ? a.status : `seen ${ago(a.lastSeen, now).toLowerCase()}`}` : h?.email}
+                  {a ? `${a.id} · ${a.client ? clientLabel(a) : 'not connected yet'} · ${isOnline(a) ? 'online' : a.status !== 'active' ? a.status : `seen ${ago(a.lastSeen, now).toLowerCase()}`}` : h?.email}
                 </div>
               </div>
               <div>
@@ -197,8 +197,13 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
           : pending.kind === 'read'
             ? {
                 title: `Turn off reading for ${name} in ${w.name}?`,
-                rows: [['Reads here after this', 'Nothing — refused at rule 5 (membership allows read)', 'amber'], ...accessImpactRows(d, m.id, w.id, false)],
-                body: 'Reversible: turn Read back on and held messages are delivered (access is re-checked at delivery). Nothing already recorded changes.',
+                rows: [
+                  ['Read', 'on → off', 'amber'],
+                  ['Write', m.write ? 'on → off — writing without reading makes no sense' : 'already off', m.write ? 'amber' : undefined],
+                  ['Reads here after this', 'Nothing — refused at rule 5 (membership allows read)'],
+                  ...accessImpactRows(d, m.id, w.id, false),
+                ],
+                body: 'Reversible: turn Read (or Write, which turns Read back on too) on again and held messages are delivered — access is re-checked at delivery. Nothing already recorded changes.',
                 confirm: 'Turn off read',
                 tone: 'danger',
                 run: () => actions.setMember(w.id, p, { read: false }),
@@ -304,7 +309,7 @@ function AddMemberModal({ open, onClose, onToken }: { open: boolean; onClose: ()
           <Select value={id} onChange={(e) => setId(e.target.value)}>
             {candidates.map((c) => (
               <option key={c.id} value={c.id}>
-                {'label' in c ? `${c.label} · ${c.harness} · ${c.id}` : `${c.name} · ${c.email}`}
+                {'label' in c ? `${c.label} · ${c.id}` : `${c.name} · ${c.email}`}
               </option>
             ))}
           </Select>
@@ -548,14 +553,16 @@ export function WsConnect() {
   const [agentId, setAgentId] = useState(initial && agents.some((m) => m.id === initial) ? initial : (agents[0]?.id ?? ''))
   const a = agentById(d, agentId)
   const m = agents.find((x) => x.id === agentId)
-  const [h, setH] = useState<Harness | 'REST'>(a?.harness === 'Other' ? 'REST' : (a?.harness ?? 'Claude Code'))
+  // The config format to write. Defaults to the client the agent last reported; it's the admin's choice, not the agent's identity.
+  const formatFor = (x: typeof a): Harness | 'REST' => (x?.client?.via === 'REST' ? 'REST' : HARNESSES.includes(x?.client?.name as Harness) ? (x!.client!.name as Harness) : 'Claude Code')
+  const [h, setH] = useState<Harness | 'REST'>(formatFor(a))
   const [waiting, setWaiting] = useState(false)
   const [template, setTemplate] = useState(false)
   const [rotating, setRotating] = useState<'agent' | 'ws' | null>(null)
   const timer = useRef<number | undefined>(undefined)
   useEffect(() => () => window.clearTimeout(timer.current), [])
   useEffect(() => {
-    if (a) setH(a.harness === 'Other' ? 'REST' : a.harness)
+    if (a) setH(formatFor(a))
     setWaiting(false)
     setTemplate(false)
   }, [agentId]) // eslint-disable-line
@@ -578,7 +585,10 @@ export function WsConnect() {
   const canRotateAgent = isOrgAdmin(d) && a.status !== 'revoked'
   const canRotateWs = canAdmin(d, w)
 
+  // In the prototype, the agent that connects with this file reports the matching client.
+  const reported: AgentClient = h === 'REST' ? { name: 'REST', via: 'REST' } : { name: h, via: 'MCP' }
   const download = () => {
+    actions.noteConfigFormat(a.id, h)
     const cfg = configFor(h, { agentId: a.id, agentToken: agentTok ?? '<AGENT_TOKEN>', wsId: w.id, wsToken: wsTok ?? '<WORKSPACE_TOKEN>' })
     const url = URL.createObjectURL(new Blob([cfg.text], { type: 'text/plain' }))
     const el = document.createElement('a')
@@ -591,7 +601,7 @@ export function WsConnect() {
       setWaiting(true)
       window.clearTimeout(timer.current)
       timer.current = window.setTimeout(() => {
-        actions.connectAgent(a.id)
+        actions.connectAgent(a.id, true, reported)
         setWaiting(false)
       }, 4000)
     }
@@ -610,7 +620,7 @@ export function WsConnect() {
               ))}
             </Select>
           </Field>
-          <Segmented size="sm" label="Harness" value={h} onChange={setH} options={HARNESSES.map((x) => ({ value: x, label: x }))} className="mb-1" />
+          <Segmented size="sm" label="Config format" value={h} onChange={setH} options={HARNESSES.map((x) => ({ value: x, label: x }))} className="mb-1" />
         </div>
         <div className="grid grid-cols-[170px_1fr_auto] items-center gap-x-4 gap-y-2 rounded-[10px] border border-edge bg-panel p-4 text-sm2">
           <span className="text-zinc-500">Agent ID</span>
@@ -697,14 +707,14 @@ export function WsConnect() {
               <div className="text-[13px] font-semibold">{waiting ? `Waiting for ${a.label} to connect…` : `${a.label} isn’t connected`}</div>
               <div className="mt-0.5 text-xs text-zinc-500">{queued ? `${plural(queued, 'message')} queued for it — delivered the moment it connects.` : 'Nothing queued for it yet.'}</div>
               {!waiting && a.status === 'active' && !missing.length && (
-                <button className="mt-2 text-xs text-signal hover:text-signal-light" onClick={() => actions.connectAgent(a.id)}>
+                <button className="mt-2 text-xs text-signal hover:text-signal-light" onClick={() => actions.connectAgent(a.id, true, reported)}>
                   Simulate the agent connecting
                 </button>
               )}
               {!waiting && a.status === 'active' && missing.length > 0 && (
                 <div className="mt-2 text-xs text-zinc-500">
                   This tab doesn’t hold its {missing.join(' or ')}, so a downloaded file can’t connect it.{' '}
-                  <button className="text-zinc-400 underline decoration-dotted hover:text-zinc-200" onClick={() => actions.connectAgent(a.id)}>
+                  <button className="text-zinc-400 underline decoration-dotted hover:text-zinc-200" onClick={() => actions.connectAgent(a.id, true, reported)}>
                     Prototype: simulate it connecting with tokens stored elsewhere
                   </button>
                 </div>
