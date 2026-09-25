@@ -125,6 +125,9 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
   )
 }
 
+const SIM_CLIENTS = ['Claude Code', 'Codex', 'OpenCode', 'REST'] as const
+type SimClient = (typeof SIM_CLIENTS)[number]
+
 export function showAgentToken(a: Agent, token: string) {
   showSecret({ kind: 'token', title: 'Agent token rotated', token, subtitle: `${a.label} · ${a.id}`, note: 'The old token keeps working for 10 minutes so a running agent can switch over. Workspace tokens are unchanged.' })
 }
@@ -138,6 +141,9 @@ export function AgentDetail() {
   const [suspending, setSuspending] = useState(false)
   const [rotating, setRotating] = useState(false)
   const [savingFilters, setSavingFilters] = useState(false)
+  // Prototype: an agent that has never connected has reported nothing, so ask which client it connects with,
+  // defaulting to the config format last downloaded for it.
+  const [firstConnect, setFirstConnect] = useState<SimClient | null>(null)
   const access = useRecordOrg(a?.orgId)
   const [f, setF] = useState<AgentFilters | null>(a?.filters ?? null)
   useEffect(() => setF(a?.filters ?? null), [a?.id]) // eslint-disable-line
@@ -164,7 +170,7 @@ export function AgentDetail() {
           admin &&
           a.status !== 'revoked' && (
             <>
-              {a.status === 'active' && <Button onClick={() => actions.connectAgent(a.id, !a.connected, a.client ?? { name: 'REST', via: 'REST' })}>{a.connected ? 'Simulate disconnect' : 'Simulate connect'}</Button>}
+              {a.status === 'active' && <Button onClick={() => (a.connected ? actions.connectAgent(a.id, false) : a.client ? actions.connectAgent(a.id, true, a.client) : setFirstConnect((a.configFormat as SimClient) ?? 'Claude Code'))}>{a.connected ? 'Simulate disconnect' : 'Simulate connect'}</Button>}
               <Button onClick={() => setRotating(true)}>Rotate token</Button>
               <Button onClick={() => (a.status === 'suspended' ? actions.setAgentStatus(a.id, 'active') : setSuspending(true))}>{a.status === 'suspended' ? 'Resume' : 'Suspend'}</Button>
               <Button variant="danger" onClick={() => setRevoking(true)}>
@@ -192,6 +198,7 @@ export function AgentDetail() {
           <span className="text-zinc-500">Client</span>
           <span>
             {clientLabel(a)}
+            {a.lastTransport && <span className="ml-2 text-xs text-zinc-500">· last transport {a.lastTransport.via}, {ago(a.lastTransport.at, now).toLowerCase()}</span>}
             <span className="block text-xs text-zinc-500">{a.client ? 'As reported by the agent when it connected. Informational — membership never depends on it.' : 'Reported by the agent when it first connects.'}</span>
           </span>
           <span className="text-zinc-500">Registered</span>
@@ -297,6 +304,25 @@ export function AgentDetail() {
           if (t) showAgentToken(a, t)
         }}
       />
+      <Modal open={!!firstConnect} onClose={() => setFirstConnect(null)} width={460} title={`Simulate ${a.label} connecting`}>
+        <div className="text-sm2 text-zinc-400">{a.label} hasn’t connected yet, so it hasn’t reported a client. Which client does it connect with?{a.configFormat ? ` (Its last downloaded config was for ${a.configFormat}.)` : ''}</div>
+        <Segmented label="Client it connects with" value={firstConnect ?? 'Claude Code'} onChange={setFirstConnect} options={SIM_CLIENTS.map((c) => ({ value: c, label: c }))} />
+        <Footer>
+          <Button size="lg" onClick={() => setFirstConnect(null)}>
+            Cancel
+          </Button>
+          <Button
+            size="lg"
+            variant="primary"
+            onClick={() => {
+              if (firstConnect) actions.connectAgent(a.id, true, firstConnect === 'REST' ? { name: 'REST', via: 'REST' } : { name: firstConnect, via: 'MCP' })
+              setFirstConnect(null)
+            }}
+          >
+            Connect
+          </Button>
+        </Footer>
+      </Modal>
       <ImpactDialog
         open={savingFilters}
         onClose={() => setSavingFilters(false)}

@@ -44,6 +44,10 @@ export interface Agent {
   label: string
   /** Reported by the agent when it connects; null until it has. Membership never depends on it. */
   client: AgentClient | null
+  /** The transport of the agent's latest connection or call (REST calls never overwrite the MCP client info). */
+  lastTransport?: { via: 'MCP' | 'REST'; at: number }
+  /** The config format last downloaded for it on the Connect page — the prototype's guess for a first simulated connect. */
+  configFormat?: string
   description: string
   tokenLast4: string
   /** After a rotation the previous token keeps working until prevTokenUntil. */

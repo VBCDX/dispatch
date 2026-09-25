@@ -588,6 +588,7 @@ export function WsConnect() {
   // In the prototype, the agent that connects with this file reports the matching client.
   const reported: AgentClient = h === 'REST' ? { name: 'REST', via: 'REST' } : { name: h, via: 'MCP' }
   const download = () => {
+    actions.noteConfigFormat(a.id, h)
     const cfg = configFor(h, { agentId: a.id, agentToken: agentTok ?? '<AGENT_TOKEN>', wsId: w.id, wsToken: wsTok ?? '<WORKSPACE_TOKEN>' })
     const url = URL.createObjectURL(new Blob([cfg.text], { type: 'text/plain' }))
     const el = document.createElement('a')

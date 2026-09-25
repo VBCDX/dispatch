@@ -254,7 +254,11 @@ export function AudiencePicker({ ws, value, onChange }: { ws: Workspace; value: 
         <AgentMultiSelect
           label={value.mode === 'only' ? 'Only these agents' : 'All agents except'}
           tone={value.mode === 'only' ? 'include' : 'exclude'}
-          options={agentMembers.map((a) => ({ id: a.id, label: a.label, sub: a.status !== 'active' ? a.status : isOnline(a) ? 'online' : 'offline' }))}
+          options={agentMembers.map((a) => {
+            // Say why an agent can't receive, before its connection state: a blocked agent is never "online" here.
+            const v = accessVerdict(d, ws, { author: { kind: 'human', id: d.currentUserId } }, a)
+            return { id: a.id, label: a.label, sub: v ? (v.final ? v.cause : `held — ${v.cause}`) : isOnline(a) ? 'online' : 'offline', warn: !!v }
+          })}
           value={ids}
           onChange={(agentIds) => onChange({ mode: value.mode as 'only' | 'except', agentIds })}
         />
@@ -267,7 +271,7 @@ export function AudiencePicker({ ws, value, onChange }: { ws: Workspace; value: 
  * Searchable multi-select: a combobox with chips. Type to filter, ↑/↓ to move, Enter to add or remove, Backspace on
  * an empty field removes the last chip, Escape closes. Scales to many agents where a row of buttons wouldn't.
  */
-export function AgentMultiSelect({ label, options, value, onChange, tone = 'include' }: { label: string; options: { id: string; label: string; sub?: string }[]; value: string[]; onChange: (ids: string[]) => void; tone?: 'include' | 'exclude' }) {
+export function AgentMultiSelect({ label, options, value, onChange, tone = 'include' }: { label: string; options: { id: string; label: string; sub?: string; warn?: boolean }[]; value: string[]; onChange: (ids: string[]) => void; tone?: 'include' | 'exclude' }) {
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
@@ -282,6 +286,11 @@ export function AgentMultiSelect({ label, options, value, onChange, tone = 'incl
   }, [open])
   const shown = options.filter((o) => o.label.toLowerCase().includes(q.trim().toLowerCase()) || o.id.includes(q.trim().toLowerCase()))
   const at = Math.min(active, Math.max(0, shown.length - 1))
+  const activeId = open && shown[at] ? `${baseId}-${shown[at].id}` : undefined
+  // Keep the active option visible while moving with the keyboard.
+  useEffect(() => {
+    if (activeId) document.getElementById(activeId)?.scrollIntoView({ block: 'nearest' })
+  }, [activeId])
   const toggle = (id: string) => onChange(value.includes(id) ? value.filter((x) => x !== id) : [...value, id])
   const nameOf = (id: string) => options.find((o) => o.id === id)?.label ?? id
   const chip = tone === 'include' ? 'border-signal/50 bg-signal/15 text-signal-light' : 'border-red-500/40 bg-red-500/10 text-red-400'
@@ -306,6 +315,7 @@ export function AgentMultiSelect({ label, options, value, onChange, tone = 'incl
           value={q}
           placeholder={value.length ? 'Add another…' : 'Search agents…'}
           onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
           onChange={(e) => {
             setQ(e.target.value)
             setActive(0)
@@ -346,7 +356,7 @@ export function AgentMultiSelect({ label, options, value, onChange, tone = 'incl
               >
                 <span className={cx('flex size-3.5 items-center justify-center rounded border text-[9px]', on ? 'border-zinc-300 bg-zinc-100 text-zinc-900' : 'border-zinc-600')}>{on ? '✓' : ''}</span>
                 <span className="font-mono">{o.label}</span>
-                {o.sub && <span className="ml-auto text-2xs text-zinc-500">{o.sub}</span>}
+                {o.sub && <span className={cx('ml-auto text-2xs', o.warn ? 'text-amber-400' : 'text-zinc-500')}>{o.sub}</span>}
               </li>
             )
           })}
