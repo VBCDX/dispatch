@@ -197,8 +197,13 @@ function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose:
           : pending.kind === 'read'
             ? {
                 title: `Turn off reading for ${name} in ${w.name}?`,
-                rows: [['Reads here after this', 'Nothing — refused at rule 5 (membership allows read)', 'amber'], ...accessImpactRows(d, m.id, w.id, false)],
-                body: 'Reversible: turn Read back on and held messages are delivered (access is re-checked at delivery). Nothing already recorded changes.',
+                rows: [
+                  ['Read', 'on → off', 'amber'],
+                  ['Write', m.write ? 'on → off — writing without reading makes no sense' : 'already off', m.write ? 'amber' : undefined],
+                  ['Reads here after this', 'Nothing — refused at rule 5 (membership allows read)'],
+                  ...accessImpactRows(d, m.id, w.id, false),
+                ],
+                body: 'Reversible: turn Read (or Write, which turns Read back on too) on again and held messages are delivered — access is re-checked at delivery. Nothing already recorded changes.',
                 confirm: 'Turn off read',
                 tone: 'danger',
                 run: () => actions.setMember(w.id, p, { read: false }),

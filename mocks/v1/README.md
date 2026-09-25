@@ -90,6 +90,8 @@ humans are members of workspaces in the same way.
   *registered by* is audit only), admin rights they delegated stand, and their messages stay under their name.
   Creator fields (*registered by*, *added by*, *delegated by*) are permanent audit fields and never grant rights —
   who can manage something comes only from the org role and workspace role.
+- Read and Write are coupled for agents: turning Read off also turns Write off, and turning Write on while Read is
+  off turns Read on — in the Members tab, over the API, and in an agent's own filters. One audit row records both.
 - Delegating admin, removing admin, turning Read or Write off, rotating a token, removing a member, suspending an
   agent and blocking an agent all show an impact preview first.
 - **Humans** in a workspace always **see, search and post to every message**, whoever it was addressed to. The

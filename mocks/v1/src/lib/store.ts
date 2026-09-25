@@ -429,6 +429,21 @@ function webhookTick(d: DB, now: number) {
   }
 }
 
+/**
+ * Writing without reading makes no sense: turning read off also turns write off, and turning write on while
+ * read is off turns read on too. Applies to memberships (UI and API) and to an agent's own filters.
+ */
+export function coupleReadWrite<T extends { read?: boolean; write?: boolean }>(cur: { read: boolean; write: boolean }, patch: T): T {
+  const next = { ...patch }
+  const read = patch.read ?? cur.read
+  const write = patch.write ?? cur.write
+  if (patch.read === false && write) next.write = false
+  else if (patch.write === true && !read) next.read = true
+  else if (patch.read === undefined && patch.write === undefined) return next
+  else if (!read && write) next.write = false
+  return next
+}
+
 /* ------------------------------------------------------------------ */
 /* Who acts                                                            */
 /* ------------------------------------------------------------------ */
@@ -612,7 +627,7 @@ export const actions = {
       const was = m.role
       const access = (x: Pick<Membership, 'read' | 'write'>) => [x.read && 'read', x.write && 'write'].filter(Boolean).join(' + ') || 'none'
       const before = access(m)
-      Object.assign(m, patch)
+      Object.assign(m, coupleReadWrite(m, patch))
       if (m.kind === 'human') m.read = true
       if (patch.role === 'admin' && was !== 'admin') {
         m.delegatedBy = a.ev.actor
@@ -734,7 +749,7 @@ export const actions = {
       const show = (x: AgentFilters) =>
         `read ${x.read ? 'on' : 'off'} · write ${x.write ? 'on' : 'off'} · blocked workspaces: ${x.workspaceBlocklist.map((w) => wsById(d, w)?.name ?? w).join(', ') || 'none'} · blocked authors: ${x.agentBlocklist.map((g) => agentById(d, g)?.label ?? g).join(', ') || 'none'}`
       const before = show(a.filters)
-      a.filters = f
+      a.filters = { ...f, ...coupleReadWrite(a.filters, f) }
       const n = recheckReceipts(d, { agentId: id })
       const w = who(d, by)
       log(d, { orgId: a.orgId,  ...w.ev, detail: [['Agent ID', a.id], ['Before', before], ['After', show(f)], ...w.detail], object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${recheckNote(n)}` })

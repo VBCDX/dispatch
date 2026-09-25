@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
-import { actions, agentById, canManageHuman, isActive, statusIn, emailTaken, explicitHumanAdmins, humanFootprint, isLastOwner, isOnline, isOrgAdmin, labelTaken, myOrgRole, org, orgAdmins, principalName, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
+import { actions, agentById, canManageHuman, coupleReadWrite, isActive, statusIn, emailTaken, explicitHumanAdmins, humanFootprint, isLastOwner, isOnline, isOrgAdmin, labelTaken, myOrgRole, org, orgAdmins, principalName, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
 import type { Agent, AgentFilters, Harness, Human, OrgRole, Workspace } from '../lib/types'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
@@ -218,10 +218,10 @@ export function AgentDetail() {
           <div className="mt-1 text-xs2 leading-relaxed text-zinc-500">An agent can narrow itself — over the API, or an admin can set it here. These beat anything a workspace grants.</div>
           <div className="mt-3 flex gap-6">
             <span className="flex items-center gap-2 text-[13px]">
-              <Toggle on={f.read} disabled={!admin} label="Read" onChange={(v) => setF({ ...f, read: v })} /> Read
+              <Toggle on={f.read} disabled={!admin} label="Read" onChange={(v) => setF({ ...f, ...coupleReadWrite(f, { read: v }) })} /> Read
             </span>
             <span className="flex items-center gap-2 text-[13px]">
-              <Toggle on={f.write} disabled={!admin} label="Write" onChange={(v) => setF({ ...f, write: v })} /> Write
+              <Toggle on={f.write} disabled={!admin} label="Write" onChange={(v) => setF({ ...f, ...coupleReadWrite(f, { write: v }) })} /> Write
             </span>
           </div>
           <Field label="Never enter these workspaces">
