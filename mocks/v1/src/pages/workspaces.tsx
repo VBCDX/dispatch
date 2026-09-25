@@ -68,7 +68,7 @@ function NewWorkspaceModal({ open, onClose }: { open: boolean; onClose: () => vo
   const [expiry, setExpiry] = useState('24')
   useEffect(() => {
     if (open) {
-      setName(myWorkspaces(d).length ? '' : 'Release train')
+      setName(myWorkspaces(d).length ? '' : 'Production')
       setDesc('')
       setExpiry('24')
     }

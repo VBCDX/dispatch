@@ -5,7 +5,7 @@ import { freshDB, populatedDB } from './seed'
 import type { PersonStatus, Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, AgentClient, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
 
 const LS_KEY = 'dispatch-mocks-v1'
-const VERSION = 7
+const VERSION = 8
 
 function load(): DB {
   try {
@@ -76,7 +76,7 @@ export const isActive = (h: Human | undefined, orgId: string) => statusIn(h, org
 export const iAmActive = (d: DB, orgId = d.currentOrgId) => isActive(me(d), orgId)
 export const isOrgAdmin = (d: DB, orgId = d.currentOrgId) => iAmActive(d, orgId) && ORG_ADMIN_ROLES.includes(me(d)?.roles[orgId] as OrgRole)
 /** Active Owners and userAdmins of the current organization. */
-export const orgAdmins = (d: DB) => d.humans.filter((h) => isActive(h, d.currentOrgId) && ORG_ADMIN_ROLES.includes(h.roles[d.currentOrgId]))
+export const orgAdmins = (d: DB, orgId = d.currentOrgId) => d.humans.filter((h) => isActive(h, orgId) && ORG_ADMIN_ROLES.includes(h.roles[orgId]))
 export const owners = (d: DB) => d.humans.filter((h) => h.roles[d.currentOrgId] === 'Owner')
 export const org = (d: DB) => d.orgs.find((o) => o.id === d.currentOrgId)
 export const agentById = (d: DB, id: string | undefined) => d.agents.find((a) => a.id === id)
@@ -123,7 +123,7 @@ export const explicitHumanAdmins = (d: DB, w: Workspace) => w.members.filter((m)
  * the organization's Owners and userAdmins are its admins by default. Agents
  * can hold admin too, but never replace the human admin.
  */
-export const defaultAdmins = (d: DB, w: Workspace) => (explicitHumanAdmins(d, w).length ? [] : orgAdmins(d))
+export const defaultAdmins = (d: DB, w: Workspace) => (explicitHumanAdmins(d, w).length ? [] : orgAdmins(d, w.orgId))
 
 export const isOnline = (a: Agent) => a.status === 'active' && a.connected
 /** The client an agent reported when it last connected, e.g. "Claude Code 2.1.4 · MCP", or "Not connected yet". */
@@ -521,8 +521,8 @@ export const canManageHuman = (d: DB, h: Human) => isOrgAdmin(d) && h.id !== d.c
 /** Logs the fallback when the last explicit human admin goes: the org's Owners and userAdmins become default admins. */
 function logDefaultAdmins(d: DB, w: Workspace, hadExplicit: boolean, by?: Actor) {
   if (!hadExplicit || explicitHumanAdmins(d, w).length) return
-  const names = orgAdmins(d).map((h) => h.name).join(', ')
-  log(d, { ...who(d, by).ev, wsId: w.id, severity: 'info', object: `${w.name} has no explicit human admin — default admins: ${names} (org Owners/userAdmins)`, result: 'Default admins', reason: 'Every workspace has at least one human admin. Agent admins keep their role but never replace the human admin.', detail: [['Explicit human admins before', 'yes'], ['After', `none — default admins ${names}`]] })
+  const names = orgAdmins(d, w.orgId).map((h) => h.name).join(', ')
+  log(d, { ...who(d, by).ev, wsId: w.id, shared: true, severity: 'info', object: `${w.name} has no explicit human admin — default admins: ${names} (org Owners/userAdmins)`, result: 'Default admins', reason: 'Every workspace has at least one human admin. Agent admins keep their role but never replace the human admin.', detail: [['Explicit human admins before', 'yes'], ['After', `none — default admins ${names}`]] })
 }
 
 /* ------------------------------------------------------------------ */
@@ -560,7 +560,7 @@ export const actions = {
 
   /* Workspaces */
   createWorkspace(w: { name: string; description: string; defaultExpiryHours: number | null }) {
-    const id = shortId('wks')
+    const id = shortId('ws')
     update((d) => {
       if (!iAmActive(d)) return
       d.workspaces.push({ id, orgId: d.currentOrgId, name: w.name, description: w.description, createdAt: Date.now(), members: [{ kind: 'human', id: d.currentUserId, role: 'admin', read: true, write: true, addedBy: me(d).name, addedById: d.currentUserId, addedAt: Date.now() }], agentBlocklist: [], defaultExpiryHours: w.defaultExpiryHours, retentionDays: 90 })
@@ -704,7 +704,7 @@ export const actions = {
   /* Agents */
   createAgent(a: { label: string; description: string }) {
     const token = newAgentToken()
-    const id = shortId('agt')
+    const id = shortId('ag')
     sessionSecrets.set(`agent:${id}`, token)
     update((d) => {
       if (!isOrgAdmin(d) || labelTaken(d, a.label)) return

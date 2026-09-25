@@ -226,7 +226,7 @@ export function LogRow({ e, compact, expanded, onToggle, fresh }: { e: AuditEven
               {e.detail.map(([k, v]) => (
                 <Fragment key={k}>
                   <span className="text-zinc-500">{k}</span>
-                  <span className={cx(/^(agt_|wks_|dsp_)/.test(v) && 'font-mono text-xs2')}>{v}</span>
+                  <span className={cx(/^(ag_|ws_|u_|org_|dsp_)/.test(v) && 'font-mono text-xs2')}>{v}</span>
                 </Fragment>
               ))}
             </div>

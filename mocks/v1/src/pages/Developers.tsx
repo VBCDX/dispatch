@@ -98,7 +98,7 @@ function TryIt() {
   const agents = orgAgents(d)
   const tryable = ENDPOINTS.filter((e) => e.tryable)
   const groups = Array.from(new Set(tryable.map((e) => e.group)))
-  const [pickedAgent, setAgentId] = useState(agents.find((a) => a.id === 'agt_builder')?.id ?? agents[0]?.id ?? '')
+  const [pickedAgent, setAgentId] = useState(agents.find((a) => a.id === 'ag_builder')?.id ?? agents[0]?.id ?? '')
   const [pickedWs, setWsId] = useState(d.workspaces.find((w) => w.orgId === d.currentOrgId)?.id ?? '')
   // The pickers only offer the current organization's agents and workspaces; a pick left over from another org falls back.
   const orgWs = d.workspaces.filter((x) => x.orgId === d.currentOrgId)

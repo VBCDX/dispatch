@@ -160,12 +160,12 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       }
       if (rw.read === false && rw.write === true) return refuse(fail(422, 'read_write_coupled', READ_WRITE_422, { field: 'write' }))
       const f = { ...a.filters, ...coupleReadWrite(a.filters, rw) }
-      for (const [k, key, kind] of [['workspace_blocklist', 'workspaceBlocklist', 'wks'], ['agent_blocklist', 'agentBlocklist', 'agt']] as const) {
+      for (const [k, key, kind] of [['workspace_blocklist', 'workspaceBlocklist', 'ws'], ['agent_blocklist', 'agentBlocklist', 'ag']] as const) {
         if (body[k] === undefined) continue
         const v = body[k]
         if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) return refuse(fail(422, 'invalid_field', `${k} must be a list of IDs.`, { field: k }))
         const d = getDB()
-        const unknown = (v as string[]).filter((id) => (kind === 'wks' ? !d.workspaces.some((w) => w.id === id && w.orgId === a.orgId) : !d.agents.some((x) => x.id === id && x.orgId === a.orgId)))
+        const unknown = (v as string[]).filter((id) => (kind === 'ws' ? !d.workspaces.some((w) => w.id === id && w.orgId === a.orgId) : !d.agents.some((x) => x.id === id && x.orgId === a.orgId)))
         if (unknown.length) return refuse(fail(422, 'unknown_ids', `Unknown IDs in ${k}: ${unknown.join(', ')}.`, { field: k }))
         f[key] = v as string[]
       }
