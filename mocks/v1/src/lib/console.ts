@@ -143,7 +143,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
 
   /* ---------------- Agent-only flows ---------------- */
   if (!needsWs) {
-    if (ep.id === 'me') return ok(200, { id: a.id, label: a.label, harness: a.harness, status: a.status, filters: filtersJson(a) })
+    if (ep.id === 'me') return ok(200, { id: a.id, label: a.label, client: a.client ?? null, status: a.status, filters: filtersJson(a) })
     if (ep.id === 'my-workspaces') {
       const d = getDB()
       const list = d.workspaces.filter((x) => x.orgId === a.orgId && x.members.some((m) => m.kind === 'agent' && m.id === a.id))
@@ -171,7 +171,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
     if (ep.id === 'heartbeat') {
       const before = getDB()
       const wasOnline = agentById(before, a.id)!.connected
-      actions.connectAgent(a.id)
+      actions.connectAgent(a.id, true, { name: 'REST', via: 'REST' })
       const d = getDB()
       const filtered = d.messages.filter((m) => m.receipts[a.id]?.filteredAt && m.receipts[a.id].filteredAt! >= Date.now() - 1000).length
       return ok(200, { online: true, was_online: wasOnline, queued_now: d.messages.filter((m) => m.receipts[a.id] && !m.receipts[a.id].filtered && !m.receipts[a.id].deliveredAt && !isExpired(m)).length, filtered_now: filtered })

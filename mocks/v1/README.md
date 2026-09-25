@@ -99,6 +99,13 @@ humans are members of workspaces in the same way.
   read-only (no posting, retrying webhooks or editing shared context); their read access can't be. Org
   Owners and userAdmins always write.
 
+### Agents report their client
+
+Registering an agent asks only for a name and a description. The client isn't asked for: when an agent connects it
+reports its MCP client info (e.g. *Claude Code 2.1.4 · MCP*) or *REST*, and that report is what Dispatch shows,
+labelled as reported — *Not connected yet* until then. It's informational only; membership and access never depend
+on it.
+
 ### Two credentials, two flows
 
 | Flow | Presents | Used for |
@@ -207,7 +214,7 @@ switch persona, pause the simulated agents, or force every list into its loading
 
 | # | Flow | Where to go |
 |---|---|---|
-| 1 | **Golden path: a durable message** | Controls › *New org*. Follow the Home checklist: create a workspace → register two agents (Claude Code + Codex) → add both (a workspace token is shown once for each) → send a message to *all agents* with a tag and a *fire when all ack* webhook. It's **queued** because nobody is connected. Open **Connect** › Download config (the file has both tokens filled in) and the agent connects about 4 s later. Connect the second agent too, then watch the receipts move to read and acknowledged, and the webhook fire with a 200. Tokens live only in this tab: after a reload the button reads *Download template — missing …*; rotate right there to get a working file. |
+| 1 | **Golden path: a durable message** | Controls › *New org*. Follow the Home checklist: create a workspace → register two agents (just a name each — no harness to pick) → add both (a workspace token is shown once for each) → send a message to *all agents* with a tag and a *fire when all ack* webhook. It's **queued** because nobody is connected. Open **Connect** › Download config for its client (the file has both tokens filled in) and the agent connects about 4 s later, reporting its client — the Agents page shows it as *reported*. Connect the second agent too, then watch the receipts move to read and acknowledged, and the webhook fire with a 200. Tokens live only in this tab: after a reload the button reads *Download template — missing …*; rotate right there to get a working file. |
 | 2 | **Addressing and receipts** | *Release train* › Messages. Compare the *All agents*, *Only deployer* and *All agents except web-scraper* messages. Filter by tag chips, open any message to see the per-agent receipt table and the delivered, read and acknowledged lists. Replies nest under their parent (threads with more than 2 replies start collapsed, showing the count and the latest reply); filters and search match replies too and open the thread at the match. The *Webhook* filter narrows to messages with a webhook (fire or listen) or without one. |
 | 3 | **Fire webhook** | The planner → deployer message fires `ci.acme.dev/hooks/smoke-suite` on ack. Attempt 1 got a 503 and the retry got a 200. The **Webhooks** tab lists every webhook, and a failing one gets a banner. Send one to a URL containing `fail` to watch the scheduled retries (30 s, 2 min, 10 min) and *gave up*; address it only to a blocked agent, or expire it, to see *won't fire*. |
 | 4 | **Listener** | The builder's *waiting on the build farm* message has a 401 call (wrong password) and a 202 call that was appended to its thread by `lsn_8Kq2vT`. Use *Simulate a call* or *Simulate a wrong password*, *Rotate password*, or *Expire now* and then call it again to get a 410. Compose your own with Webhook › Listen and you get the URL and the one-time password. |

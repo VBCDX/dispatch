@@ -2,10 +2,10 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { accessVerdict, evaluate, targets } from './access'
 import { HOUR, MIN, clock, newAgentToken, newHookPassword, newWsToken, shortId, trackingCode, uid } from './format'
 import { freshDB, populatedDB } from './seed'
-import type { PersonStatus, Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, Harness, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
+import type { PersonStatus, Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, AgentClient, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
 
 const LS_KEY = 'dispatch-mocks-v1'
-const VERSION = 6
+const VERSION = 7
 
 function load(): DB {
   try {
@@ -126,6 +126,8 @@ export const explicitHumanAdmins = (d: DB, w: Workspace) => w.members.filter((m)
 export const defaultAdmins = (d: DB, w: Workspace) => (explicitHumanAdmins(d, w).length ? [] : orgAdmins(d))
 
 export const isOnline = (a: Agent) => a.status === 'active' && a.connected
+/** The client an agent reported when it last connected, e.g. "Claude Code 2.1.4 · MCP", or "Not connected yet". */
+export const clientLabel = (a: Agent | undefined) => (a?.client ? `${a.client.via === 'REST' ? 'REST' : `${a.client.name}${a.client.version ? ` ${a.client.version}` : ''} · MCP`}` : 'Not connected yet')
 
 export const isExpired = (m: Message, now = Date.now()) => m.expiresAt != null && m.expiresAt <= now
 export type ReceiptState = 'queued' | 'held' | 'delivered' | 'read' | 'acked' | 'filtered' | 'expired'
@@ -700,14 +702,14 @@ export const actions = {
   },
 
   /* Agents */
-  createAgent(a: { label: string; harness: Harness; description: string }) {
+  createAgent(a: { label: string; description: string }) {
     const token = newAgentToken()
     const id = shortId('agt')
     sessionSecrets.set(`agent:${id}`, token)
     update((d) => {
       if (!isOrgAdmin(d) || labelTaken(d, a.label)) return
-      d.agents.push({ id, orgId: d.currentOrgId, label: a.label, harness: a.harness, description: a.description, tokenLast4: token.slice(-4), status: 'active', createdAt: Date.now(), createdBy: me(d).name, createdById: d.currentUserId, lastSeen: null, connected: false, filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: [] } })
-      log(d, { object: `Registered agent ${a.label} (${a.harness}) · ${id}` })
+      d.agents.push({ id, orgId: d.currentOrgId, label: a.label, client: null, description: a.description, tokenLast4: token.slice(-4), status: 'active', createdAt: Date.now(), createdBy: me(d).name, createdById: d.currentUserId, lastSeen: null, connected: false, filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: [] } })
+      log(d, { object: `Registered agent ${a.label} · ${id}` })
     })
     return { id, token }
   },
@@ -765,13 +767,15 @@ export const actions = {
     })
   },
   /** Prototype: the agent opens its MCP session / starts polling. Queued messages get delivered. */
-  connectAgent(id: string, on = true) {
+  /** The agent connects and reports its client (MCP clientInfo, or REST); the report is stored as-is, for display only. */
+  connectAgent(id: string, on = true, client?: AgentClient) {
     update((d) => {
       const a = agentById(d, id)
       if (!a || a.status !== 'active') return
       a.connected = on
       a.lastSeen = Date.now()
       if (!on) return
+      a.client = { ...(client ?? a.client ?? { name: 'REST', via: 'REST' as const }), at: Date.now() }
       // Delivery re-checks access: whatever changed while the agent was away decides now.
       const filtered = recheckReceipts(d, { agentId: id })
       let n = 0
@@ -782,7 +786,7 @@ export const actions = {
           n++
         }
       }
-      log(d, { orgId: a.orgId,  type: 'access', severity: 'ok', actor: a.label, actorKind: 'agent', actorId: id, object: `Connected over ${a.harness === 'Other' ? 'REST' : 'MCP'}`, result: (n ? `${n} queued message${n === 1 ? '' : 's'} delivered` : 'Nothing queued') + recheckNote(filtered) })
+      log(d, { orgId: a.orgId,  type: 'access', severity: 'ok', actor: a.label, actorKind: 'agent', actorId: id, object: `Connected over ${a.client.via}${a.client.via === 'MCP' ? ` · reports ${a.client.name}${a.client.version ? ` ${a.client.version}` : ''}` : ''}`, result: (n ? `${n} queued message${n === 1 ? '' : 's'} delivered` : 'Nothing queued') + recheckNote(filtered) })
     })
   },
 

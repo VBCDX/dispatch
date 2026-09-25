@@ -2,8 +2,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
-import { actions, agentById, canManageHuman, coupleReadWrite, isActive, statusIn, emailTaken, explicitHumanAdmins, humanFootprint, isLastOwner, isOnline, isOrgAdmin, labelTaken, myOrgRole, org, orgAdmins, principalName, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
-import type { Agent, AgentFilters, Harness, Human, OrgRole, Workspace } from '../lib/types'
+import { actions, agentById, canManageHuman, clientLabel, coupleReadWrite, isActive, statusIn, emailTaken, explicitHumanAdmins, humanFootprint, isLastOwner, isOnline, isOrgAdmin, labelTaken, myOrgRole, org, orgAdmins, principalName, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
+import type { Agent, AgentFilters, Human, OrgRole, Workspace } from '../lib/types'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
 import { accessImpactRows, AgentGlyph, AuditLog, ImpactDialog, ListBody, NoAccess, PrincipalChip, useRecordOrg } from '../components/shared'
@@ -34,8 +34,8 @@ export function AgentsPage() {
   return (
     <div>
       <PageTitle actions={isOrgAdmin(d) && <Button variant="primary" onClick={() => setCreating(true)}>Register agent</Button>}>Agents</PageTitle>
-      <div className="mt-1 max-w-[760px] text-sm2 text-zinc-500">Agents from any harness — Claude Code, Codex, OpenCode, or anything that speaks REST or MCP. Each has a public agent ID and a secret agent token. Membership in a workspace adds a second, per-workspace token.</div>
-      <Table cols={A_COLS} head={['Agent', 'Agent ID', 'Harness', 'Status', 'Token', 'Workspaces', 'Own filters']} className="mt-5 max-w-[1160px]">
+      <div className="mt-1 max-w-[760px] text-sm2 text-zinc-500">Agents on any client — Claude Code, Codex, OpenCode, or anything that speaks REST or MCP. Each has a public agent ID and a secret agent token. Membership in a workspace adds a second, per-workspace token.</div>
+      <Table cols={A_COLS} head={['Agent', 'Agent ID', 'Client · reported', 'Status', 'Token', 'Workspaces', 'Own filters']} className="mt-5 max-w-[1160px]">
         <ListBody cols={A_COLS} what="agents" empty={list.length ? undefined : <div className="p-10 text-center text-[13px] text-zinc-400">No agents yet. Register one to give it an ID and token it can connect with.</div>}>
           {list.map((a) => {
             const ws = d.workspaces.filter((w) => w.orgId === a.orgId && w.members.some((m) => m.kind === 'agent' && m.id === a.id))
@@ -49,7 +49,7 @@ export function AgentsPage() {
                 <div>
                   <CopyChip value={a.id} variant="inline" />
                 </div>
-                <div className="text-zinc-400">{a.harness}</div>
+                <div className={cx('text-xs', a.client ? 'text-zinc-400' : 'text-zinc-600')}>{clientLabel(a)}</div>
                 <div>
                   <AgentStatus a={a} />
                 </div>
@@ -80,19 +80,17 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
   const d = useDB()
   const nav = useNavigate()
   const [label, setLabel] = useState('')
-  const [harness, setHarness] = useState<Harness>('Claude Code')
   const [desc, setDesc] = useState('')
   useEffect(() => {
     if (open) {
       const n = orgAgents(d).length
       setLabel(n === 0 ? 'planner' : n === 1 ? 'builder' : '')
-      setHarness(n === 1 ? 'Codex' : 'Claude Code')
       setDesc('')
     }
   }, [open]) // eslint-disable-line
   const clash = labelTaken(d, label)
   const register = () => {
-    const made = actions.createAgent({ label: label.trim(), harness, description: desc })
+    const made = actions.createAgent({ label: label.trim(), description: desc })
     onClose()
     nav(`/agents/${made.id}`)
     showSecret({
@@ -101,7 +99,7 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
       token: made.token,
       subtitle: (
         <span>
-          <span className="font-mono">{label.trim()}</span> · {harness} · agent ID <span className="font-mono text-zinc-200">{made.id}</span>
+          <span className="font-mono">{label.trim()}</span> · agent ID <span className="font-mono text-zinc-200">{made.id}</span>
         </span>
       ),
       note: 'With the agent ID, this token opens the agent-only flows. Add the agent to a workspace to give it a workspace token too.',
@@ -111,14 +109,6 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
     <Modal open={open} onClose={onClose} width={480} title="Register agent">
       <Field label="Label" hint="Short and lowercase reads best in logs." error={clash ? 'An agent in this org already uses this label (revoked agents included), so the audit log stays unambiguous.' : null}>
         <Input mono value={label} onChange={(e) => setLabel(e.target.value)} placeholder="planner" autoFocus />
-      </Field>
-      <Field label="Harness" hint="Informational — membership never depends on the harness.">
-        <Segmented
-          label="Harness"
-          value={harness}
-          onChange={setHarness}
-          options={(['Claude Code', 'Codex', 'OpenCode', 'Other'] as Harness[]).map((h) => ({ value: h, label: h }))}
-        />
       </Field>
       <Field label="What it does" optional hint="Other agents see this when they list workspace members.">
         <Textarea rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} />
@@ -174,7 +164,7 @@ export function AgentDetail() {
           admin &&
           a.status !== 'revoked' && (
             <>
-              {a.status === 'active' && <Button onClick={() => actions.connectAgent(a.id, !a.connected)}>{a.connected ? 'Simulate disconnect' : 'Simulate connect'}</Button>}
+              {a.status === 'active' && <Button onClick={() => actions.connectAgent(a.id, !a.connected, a.client ?? { name: 'REST', via: 'REST' })}>{a.connected ? 'Simulate disconnect' : 'Simulate connect'}</Button>}
               <Button onClick={() => setRotating(true)}>Rotate token</Button>
               <Button onClick={() => (a.status === 'suspended' ? actions.setAgentStatus(a.id, 'active') : setSuspending(true))}>{a.status === 'suspended' ? 'Resume' : 'Suspend'}</Button>
               <Button variant="danger" onClick={() => setRevoking(true)}>
@@ -185,7 +175,7 @@ export function AgentDetail() {
         }
       >
         <span className="flex items-center gap-3">
-          <AgentGlyph harness={a.harness} size={28} dim={a.status !== 'active'} />
+          <AgentGlyph client={a.client} size={28} dim={a.status !== 'active'} />
           <span className={cx('font-mono', a.status === 'revoked' && 'text-zinc-500 line-through')}>{a.label}</span>
         </span>
       </PageTitle>
@@ -199,8 +189,11 @@ export function AgentDetail() {
           </span>
           <span className="text-zinc-500">Agent token</span>
           <span className="masked-token text-xs text-zinc-400">{maskAgentToken(a.tokenLast4)}</span>
-          <span className="text-zinc-500">Harness</span>
-          <span>{a.harness}</span>
+          <span className="text-zinc-500">Client</span>
+          <span>
+            {clientLabel(a)}
+            <span className="block text-xs text-zinc-500">{a.client ? 'As reported by the agent when it connected. Informational — membership never depends on it.' : 'Reported by the agent when it first connects.'}</span>
+          </span>
           <span className="text-zinc-500">Registered</span>
           <span>
             {ago(a.createdAt, now)} · by {a.createdBy} <span className="text-xs text-zinc-500">(audit only — agents belong to the organization)</span>
