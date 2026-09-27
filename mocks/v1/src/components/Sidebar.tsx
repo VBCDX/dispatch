@@ -5,16 +5,18 @@ import { OrgSwitcher } from './OrgSwitcher'
 import { cx } from './ui'
 
 type Item = { label: string; to?: string; indent?: boolean; group?: boolean; end?: boolean }
+// The suite's shared order; Dispatch's own items (Search, Developers) slot in where Keyhole has its own.
 const NAV: Item[] = [
   { label: 'Home', to: '/', end: true },
+  { label: 'Organizations', to: '/orgs' },
   { label: 'Workspaces', to: '/workspaces' },
   { label: 'Search', to: '/search' },
   { label: 'Players', group: true },
-  { label: 'Agents', to: '/agents', indent: true },
-  { label: 'People', to: '/people', indent: true },
-  { label: 'Audit', to: '/audit' },
+  { label: 'Users', to: '/players/users', indent: true },
+  { label: 'Agents', to: '/players/agents', indent: true },
   { label: 'Developers', group: true },
   { label: 'API & MCP', to: '/developers', indent: true },
+  { label: 'Audit', to: '/audit' },
   { label: 'Settings', group: true },
   { label: 'My Settings', to: '/settings/me', indent: true },
   { label: 'Account', to: '/settings/account', indent: true },

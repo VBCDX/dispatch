@@ -2,75 +2,30 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
-import { actions, agentById, canManageHuman, clientLabel, coupleReadWrite, isActive, statusIn, emailTaken, explicitHumanAdmins, humanFootprint, isLastOwner, isOnline, isOrgAdmin, labelTaken, myOrgRole, org, orgAdmins, principalName, orgAgents, orgEvents, orgHumans, receiptState, useDB, useNow, wsById } from '../lib/store'
-import type { Agent, AgentFilters, Human, OrgRole, Workspace } from '../lib/types'
+import { actions, agentById, clientLabel, coupleReadWrite, humanById, isOrgAdmin, labelTaken, membershipsOf, org, orgAgents, ORG_ADMIN_ROLES, receiptState, useDB, useNow, visibleEvents, workspaceRole, wsById } from '../lib/store'
+import type { AgentFilters } from '../lib/types'
+import { AgentsGrid, AgentStatus, InviteUserModal, PersonStatus, UsersGrid } from './grids'
+import { useAgentActions, useUserActions } from './playerActions'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
-import { accessImpactRows, AgentGlyph, AuditLog, ImpactDialog, ListBody, NoAccess, PrincipalChip, useRecordOrg } from '../components/shared'
-import { Breadcrumb, Button, Card, Field, Footer, Input, Menu, Modal, PageTitle, Pill, Row, Segmented, StatusInline, Table, Textarea, Toggle, cx } from '../components/ui'
+import { accessImpactRows, AgentGlyph, AuditLog, ImpactDialog, NoAccess, useRecordOrg } from '../components/shared'
+import { Breadcrumb, Button, Card, Field, Footer, Input, Menu, Modal, PageTitle, Pill, Row, Table, Textarea, Toggle, cx } from '../components/ui'
 
 /* ------------------------------------------------------------------ */
 /* Agents                                                              */
 /* ------------------------------------------------------------------ */
-const A_COLS = '1.3fr 1fr 0.9fr 1.3fr 0.9fr 1.5fr 1fr'
-
-export function AgentStatus({ a }: { a: Agent }) {
-  const now = useNow()
-  if (a.status === 'revoked') return <StatusInline tone="gray">Revoked</StatusInline>
-  if (a.status === 'suspended') return <StatusInline tone="amber">Suspended</StatusInline>
-  if (isOnline(a)) return <StatusInline tone="green">Online</StatusInline>
-  return <StatusInline tone="gray">{a.lastSeen ? `Offline · ${ago(a.lastSeen, now).toLowerCase()}` : 'Never connected'}</StatusInline>
-}
-
 export function AgentsPage() {
   const d = useDB()
-  const nav = useNavigate()
   const [params, setParams] = useSearchParams()
   const [creating, setCreating] = useState(params.get('new') === '1')
   useEffect(() => {
     if (params.get('new')) setParams({}, { replace: true })
   }, []) // eslint-disable-line
-  const list = orgAgents(d)
   return (
     <div>
       <PageTitle actions={isOrgAdmin(d) && <Button variant="primary" onClick={() => setCreating(true)}>Register agent</Button>}>Agents</PageTitle>
-      <div className="mt-1 max-w-[760px] text-sm2 text-zinc-500">Agents on any client — Claude Code, Codex, OpenCode, or anything that speaks REST or MCP. Each has a public agent ID and a secret agent token. Membership in a workspace adds a second, per-workspace token.</div>
-      <Table cols={A_COLS} head={['Agent', 'Agent ID', 'Client · reported', 'Status', 'Token', 'Workspaces', 'Own filters']} className="mt-5 max-w-[1160px]">
-        <ListBody cols={A_COLS} what="agents" empty={list.length ? undefined : <div className="p-10 text-center text-[13px] text-zinc-400">No agents yet. Register one to give it an ID and token it can connect with.</div>}>
-          {list.map((a) => {
-            const ws = d.workspaces.filter((w) => w.orgId === a.orgId && w.members.some((m) => m.kind === 'agent' && m.id === a.id))
-            const f = a.filters
-            const narrowed = [!f.read && 'no read', !f.write && 'no write', f.workspaceBlocklist.length && `${f.workspaceBlocklist.length} ws blocked`, f.agentBlocklist.length && `${f.agentBlocklist.length} authors blocked`].filter(Boolean)
-            return (
-              <Row key={a.id} cols={A_COLS} onClick={() => nav(`/agents/${a.id}`)} className={cx(a.status === 'revoked' && 'text-zinc-500')}>
-                <div className="min-w-0">
-                  <PrincipalChip p={{ kind: 'agent', id: a.id }} />
-                </div>
-                <div>
-                  <CopyChip value={a.id} variant="inline" />
-                </div>
-                <div className={cx('text-xs', a.client ? 'text-zinc-400' : 'text-zinc-600')}>{clientLabel(a)}</div>
-                <div>
-                  <AgentStatus a={a} />
-                </div>
-                <div className="masked-token text-xs text-zinc-500">••••{a.tokenLast4}</div>
-                <div className="min-w-0 truncate text-zinc-400">
-                  {ws.map((w) => {
-                    const ok = evaluate(d, a.id, w.id, 'read').allowed
-                    return (
-                      <span key={w.id} className={cx('mr-2', !ok && 'text-red-400 line-through')} title={ok ? '' : evaluate(d, a.id, w.id, 'read').reason ?? ''}>
-                        {w.name}
-                      </span>
-                    )
-                  })}
-                  {!ws.length && '—'}
-                </div>
-                <div className={cx('text-xs', narrowed.length ? 'text-amber-400' : 'text-zinc-500')}>{narrowed.join(' · ') || 'None'}</div>
-              </Row>
-            )
-          })}
-        </ListBody>
-      </Table>
+      <div className="mt-1 max-w-[760px] text-sm2 text-zinc-500">One agent record across the suite. In Dispatch each has a public agent ID and a secret agent token (dsp_agent_…); membership in a workspace adds a second, per-workspace token. Agents run on any client — Claude Code, Codex, OpenCode, or anything that speaks REST or MCP.</div>
+      <AgentsGrid className="mt-5" />
       <NewAgentModal open={creating} onClose={() => setCreating(false)} />
     </div>
   )
@@ -92,7 +47,7 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
   const register = () => {
     const made = actions.createAgent({ label: label.trim(), description: desc })
     onClose()
-    nav(`/agents/${made.id}`)
+    nav(`/players/agents/${made.id}`)
     showSecret({
       kind: 'token',
       title: 'Agent registered',
@@ -125,30 +80,18 @@ function NewAgentModal({ open, onClose }: { open: boolean; onClose: () => void }
   )
 }
 
-const SIM_CLIENTS = ['Claude Code', 'Codex', 'OpenCode', 'REST'] as const
-type SimClient = (typeof SIM_CLIENTS)[number]
-
-export function showAgentToken(a: Agent, token: string) {
-  showSecret({ kind: 'token', title: 'Agent token rotated', token, subtitle: `${a.label} · ${a.id}`, note: 'The old token keeps working for 10 minutes so a running agent can switch over. Workspace tokens are unchanged.' })
-}
-
 export function AgentDetail() {
   const d = useDB()
   const now = useNow()
   const { agentId } = useParams()
   const a = agentById(d, agentId)
-  const [revoking, setRevoking] = useState(false)
-  const [suspending, setSuspending] = useState(false)
-  const [rotating, setRotating] = useState(false)
   const [savingFilters, setSavingFilters] = useState(false)
-  // Prototype: an agent that has never connected has reported nothing, so ask which client it connects with,
-  // defaulting to the config format last downloaded for it.
-  const [firstConnect, setFirstConnect] = useState<SimClient | null>(null)
+  const { menuFor, dialogs, simulate } = useAgentActions()
   const access = useRecordOrg(a?.orgId)
   const [f, setF] = useState<AgentFilters | null>(a?.filters ?? null)
   useEffect(() => setF(a?.filters ?? null), [a?.id]) // eslint-disable-line
   if (access === 'switching') return null
-  if (!a || !f || access === 'denied') return <NoAccess what="agent" back={{ to: '/agents', label: 'Back to agents' }} />
+  if (!a || !f || access === 'denied') return <NoAccess what="agent" back={{ to: '/players/agents', label: 'Back to agents' }} />
   const admin = isOrgAdmin(d)
   // Only the agent's own organization, whichever org is on screen.
   const memberships = d.workspaces.filter((w) => w.orgId === a.orgId && w.members.some((m) => m.kind === 'agent' && m.id === a.id))
@@ -163,21 +106,14 @@ export function AgentDetail() {
 
   return (
     <div className="max-w-[1120px]">
-      <Breadcrumb items={[{ label: 'Agents', to: '/agents' }, { label: a.label }]} />
+      <Breadcrumb items={[{ label: 'Players' }, { label: 'Agents', to: '/players/agents' }, { label: a.label }]} />
       <PageTitle
         sub={<AgentStatus a={a} />}
         actions={
-          admin &&
-          a.status !== 'revoked' && (
-            <>
-              {a.status === 'active' && <Button onClick={() => (a.connected ? actions.connectAgent(a.id, false) : a.client ? actions.connectAgent(a.id, true, a.client) : setFirstConnect((a.configFormat as SimClient) ?? 'Claude Code'))}>{a.connected ? 'Simulate disconnect' : 'Simulate connect'}</Button>}
-              <Button onClick={() => setRotating(true)}>Rotate token</Button>
-              <Button onClick={() => (a.status === 'suspended' ? actions.setAgentStatus(a.id, 'active') : setSuspending(true))}>{a.status === 'suspended' ? 'Resume' : 'Suspend'}</Button>
-              <Button variant="danger" onClick={() => setRevoking(true)}>
-                Revoke
-              </Button>
-            </>
-          )
+          <>
+            {admin && a.status === 'active' && <Button onClick={() => simulate(a)}>{a.connected ? 'Simulate disconnect' : 'Simulate connect'}</Button>}
+            {admin && <Menu label={`Actions for ${a.label}`} items={menuFor(a, { detail: true })} />}
+          </>
         }
       >
         <span className="flex items-center gap-3">
@@ -258,7 +194,7 @@ export function AgentDetail() {
                 {w.name}
               </Link>
               <div>
-                <Pill tone={m.role === 'admin' ? 'green' : 'neutral'}>{m.role}</Pill>
+                <Pill tone={m.role === 'admin' ? 'green' : 'neutral'}>{m.role === 'admin' ? 'Workspace admin' : 'Member'}</Pill>
               </div>
               <div className={r.allowed ? 'text-green-400' : 'text-red-400'}>{r.allowed ? 'Allowed' : 'Refused'}</div>
               <div className={wr.allowed ? 'text-green-400' : 'text-zinc-500'}>{wr.allowed ? 'Allowed' : 'Refused'}</div>
@@ -266,7 +202,7 @@ export function AgentDetail() {
             </Row>
           )
         })}
-        {!memberships.length && <div className="p-6 text-center text-sm2 text-zinc-500">Not in any workspace yet. Add it from a workspace’s Members tab.</div>}
+        {!memberships.length && <div className="p-6 text-center text-sm2 text-zinc-500">Not in any workspace yet. Use Assign workspaces… in the ⋯ menu, or add it from a workspace’s Members tab.</div>}
       </Table>
 
       <div className="eyebrow mt-7 mb-2.5">Addressed to it · recent</div>
@@ -285,44 +221,10 @@ export function AgentDetail() {
         {!inbox.length && <div className="p-6 text-center text-sm2 text-zinc-500">Nothing addressed to it yet.</div>}
       </Card>
 
-      <div className="eyebrow mt-7 mb-3">Activity</div>
-      <AuditLog events={orgEvents(d).filter((e) => e.actorId === a.id || e.object.includes(a.label) || e.object.includes(a.id))} />
+      <div className="eyebrow mt-7 mb-1">Activity</div>
+      <div className="mb-3 text-xs text-zinc-500">{a.label}’s events in Dispatch, plus shared suite events about it (marked Shared).</div>
+      <AuditLog events={visibleEvents(d, { player: { kind: 'agent', id: a.id } })} />
 
-      <ImpactDialog
-        open={rotating}
-        onClose={() => setRotating(false)}
-        title={`Rotate ${a.label}’s agent token?`}
-        rows={[
-          ['Current token', `${maskAgentToken(a.tokenLast4)} — keeps working for 10 minutes`, 'amber'],
-          ['Workspace tokens', 'Unchanged'],
-          ['Connected now', isOnline(a) ? 'Yes — update its config within 10 minutes' : 'No'],
-        ]}
-        body="The new token is shown once."
-        confirmLabel="Rotate token"
-        onConfirm={() => {
-          const t = actions.rotateAgentToken(a.id)
-          if (t) showAgentToken(a, t)
-        }}
-      />
-      <Modal open={!!firstConnect} onClose={() => setFirstConnect(null)} width={460} title={`Simulate ${a.label} connecting`}>
-        <div className="text-sm2 text-zinc-400">{a.label} hasn’t connected yet, so it hasn’t reported a client. Which client does it connect with?{a.configFormat ? ` (Its last downloaded config was for ${a.configFormat}.)` : ''}</div>
-        <Segmented label="Client it connects with" value={firstConnect ?? 'Claude Code'} onChange={setFirstConnect} options={SIM_CLIENTS.map((c) => ({ value: c, label: c }))} />
-        <Footer>
-          <Button size="lg" onClick={() => setFirstConnect(null)}>
-            Cancel
-          </Button>
-          <Button
-            size="lg"
-            variant="primary"
-            onClick={() => {
-              if (firstConnect) actions.connectAgent(a.id, true, firstConnect === 'REST' ? { name: 'REST', via: 'REST' } : { name: firstConnect, via: 'MCP' })
-              setFirstConnect(null)
-            }}
-          >
-            Connect
-          </Button>
-        </Footer>
-      </Modal>
       <ImpactDialog
         open={savingFilters}
         onClose={() => setSavingFilters(false)}
@@ -337,34 +239,7 @@ export function AgentDetail() {
         confirmLabel="Save filters"
         onConfirm={() => actions.setAgentFilters(a.id, f)}
       />
-      <ImpactDialog
-        open={suspending}
-        onClose={() => setSuspending(false)}
-        title={`Suspend ${a.label}?`}
-        rows={[
-          ['Connected now', isOnline(a) ? 'Yes — disconnected now' : 'No', isOnline(a) ? 'amber' : undefined],
-          ['Workspaces', memberships.map((w) => w.name).join(', ') || 'None'],
-          ['Admin in', memberships.filter((w) => w.members.some((m) => m.id === a.id && m.role === 'admin')).map((w) => w.name).join(', ') || 'None', memberships.some((w) => w.members.some((m) => m.id === a.id && m.role === 'admin')) ? 'amber' : undefined],
-          ...accessImpactRows(d, a.id, undefined, false),
-        ]}
-        body="Reversible: its tokens stay valid but every request is refused until you resume it. Queued messages are held, not dropped — resuming delivers them (re-checked at delivery). Nothing it already recorded changes."
-        confirmLabel="Suspend agent"
-        onConfirm={() => actions.setAgentStatus(a.id, 'suspended')}
-      />
-      <ImpactDialog
-        open={revoking}
-        onClose={() => setRevoking(false)}
-        title={`Revoke ${a.label}?`}
-        rows={[
-          ['Last seen', ago(a.lastSeen, now), a.lastSeen && now - a.lastSeen < 3_600_000 ? 'amber' : undefined],
-          ['Workspaces', memberships.map((w) => w.name).join(', ') || 'None'],
-          ['Admin in', memberships.filter((w) => w.members.some((m) => m.id === a.id && m.role === 'admin')).map((w) => w.name).join(', ') || 'None'],
-          ...accessImpactRows(d, a.id, undefined, true),
-        ]}
-        body="Its agent token and every workspace token stop working now. Its next request is refused and logged. What it already received, read or acknowledged stays as recorded. This can’t be undone."
-        confirmLabel="Revoke agent"
-        onConfirm={() => actions.setAgentStatus(a.id, 'revoked')}
-      />
+      {dialogs}
     </div>
   )
 }
@@ -412,176 +287,74 @@ function IdChips({ ids, label, options, onChange, disabled, what }: { ids: strin
   )
 }
 
+
 /* ------------------------------------------------------------------ */
-/* People                                                              */
+/* Users                                                               */
 /* ------------------------------------------------------------------ */
-const P_COLS = '1.4fr 1.6fr 0.9fr 0.9fr 2fr 1fr 36px'
-type PersonAction = { kind: 'remove' | 'suspend' | 'transfer' | 'role'; h: Human; role?: 'userAdmin' | 'user' }
-export function PeoplePage() {
+export function UsersPage() {
   const d = useDB()
-  const now = useNow()
   const [inviting, setInviting] = useState(false)
-  const [email, setEmail] = useState('')
-  const [role, setRole] = useState<OrgRole>('user')
-  const [acting, setActing] = useState<PersonAction | null>(null)
-  const list = orgHumans(d)
-  const iAmOwner = isOrgAdmin(d) && myOrgRole(d) === 'Owner'
-  // Last active *in this organization*, from its own audit log. Activity elsewhere is never shown here.
-  const lastActiveHere = new Map<string, number>()
-  for (const e of orgEvents(d)) if (e.actorKind === 'human' && e.actorId && !lastActiveHere.has(e.actorId)) lastActiveHere.set(e.actorId, e.at)
   return (
     <div>
-      <PageTitle actions={isOrgAdmin(d) && <Button variant="primary" onClick={() => setInviting(true)}>Invite person</Button>}>People</PageTitle>
-      <div className="mt-1 max-w-[760px] text-sm2 text-zinc-500">Humans sign in to the web app with SSO. Like agents, they see a workspace only once an admin adds them — and inside it they can read, search and post to every message.</div>
-      <Table cols={P_COLS} head={['Name', 'Email', 'Org role', 'Status', 'Workspaces', 'Last active', '']} className="mt-5 max-w-[1120px]">
-        <ListBody cols={P_COLS} what="people">
-          {list.map((h) => {
-            // This organization's workspaces only — a person's memberships elsewhere are not shown here.
-            const ws = d.workspaces.filter((w) => w.orgId === d.currentOrgId && w.members.some((m) => m.kind === 'human' && m.id === h.id))
-            return (
-              <Row key={h.id} cols={P_COLS}>
-                <PrincipalChip p={{ kind: 'human', id: h.id }} />
-                <div className="text-zinc-400">{h.email}</div>
-                <div className="text-zinc-400">
-                  {h.roles[d.currentOrgId]}
-                  {isLastOwner(d, h) && <div className="text-2xs text-zinc-600">last active Owner</div>}
-                </div>
-                <div>{statusIn(h, d.currentOrgId) === 'active' ? <StatusInline tone="green">Active</StatusInline> : statusIn(h, d.currentOrgId) === 'invited' ? <StatusInline tone="gray">Invited</StatusInline> : <StatusInline tone="amber">Suspended</StatusInline>}</div>
-                <div className="text-xs text-zinc-400">
-                  {ws.map((w) => {
-                    const m = w.members.find((x) => x.kind === 'human' && x.id === h.id)!
-                    return (
-                      <span key={w.id} className="mr-2">
-                        {w.name}
-                        {m.role === 'admin' && <span className="text-green-400"> (admin)</span>}
-                      </span>
-                    )
-                  })}
-                  {!ws.length && '—'}
-                </div>
-                <div className="text-zinc-500">{h.id === d.currentUserId ? 'Now' : lastActiveHere.has(h.id) ? ago(lastActiveHere.get(h.id)!, now) : '—'}</div>
-                <div className="text-right">
-                  {isOrgAdmin(d) && h.id !== d.currentUserId && (
-                    <Menu
-                      label={`Actions for ${h.name}`}
-                      items={[
-                        h.roles[d.currentOrgId] === 'Owner'
-                          ? null
-                          : h.roles[d.currentOrgId] === 'user'
-                            ? { label: 'Make userAdmin', onClick: () => setActing({ kind: 'role', h, role: 'userAdmin' }) }
-                            : { label: 'Make user', onClick: () => setActing({ kind: 'role', h, role: 'user' }) },
-                        iAmOwner && h.roles[d.currentOrgId] !== 'Owner' ? { label: 'Transfer ownership…', disabled: !isActive(h, d.currentOrgId), hint: !isActive(h, d.currentOrgId) ? 'Only to an active person' : undefined, onClick: () => setActing({ kind: 'transfer', h }) } : null,
-                        statusIn(h, d.currentOrgId) === 'suspended'
-                          ? { label: 'Resume', disabled: !canManageHuman(d, h), onClick: () => actions.setHumanStatus(h.id, 'active') }
-                          : { label: 'Suspend…', disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last active Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'suspend', h }) },
-                        { label: 'Remove from organization…', danger: true, disabled: !canManageHuman(d, h) || isLastOwner(d, h), hint: isLastOwner(d, h) ? 'The last active Owner — transfer ownership first' : !canManageHuman(d, h) ? 'Only an Owner can act on an Owner' : undefined, onClick: () => setActing({ kind: 'remove', h }) },
-                      ]}
-                    />
-                  )}
-                </div>
-              </Row>
-            )
-          })}
-        </ListBody>
-      </Table>
-      <Modal open={inviting} onClose={() => setInviting(false)} width={440} title="Invite person">
-        <Field label="Email" error={emailTaken(d, email) ? `${email.trim()} is already in ${d.orgs.find((o) => o.id === d.currentOrgId)?.name}.` : null}>
-          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus />
-        </Field>
-        <Field label="Org role" hint="Owners and userAdmins administer every workspace. Users see only the workspaces they’ve been added to. Owner is given by transferring ownership.">
-          <Segmented
-            label="Org role"
-            value={role}
-            onChange={setRole}
-            options={[
-              { value: 'user', label: 'user' },
-              { value: 'userAdmin', label: 'userAdmin' },
-            ]}
-          />
-        </Field>
-        <Footer>
-          <Button size="lg" onClick={() => setInviting(false)}>
-            Cancel
-          </Button>
-          <Button
-            size="lg"
-            variant="primary"
-            disabled={!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || emailTaken(d, email)}
-            onClick={() => {
-              actions.inviteHuman(email, role)
-              setInviting(false)
-              setEmail('')
-            }}
-          >
-            Send invite
-          </Button>
-        </Footer>
-      </Modal>
-      <PersonConfirm acting={acting} onClose={() => setActing(null)} />
+      <PageTitle actions={isOrgAdmin(d) && <Button variant="primary" onClick={() => setInviting(true)}>Invite user</Button>}>Users</PageTitle>
+      <div className="mt-1 max-w-[760px] text-sm2 text-zinc-500">People in {org(d)?.name}, shared across the suite. They sign in with SSO and, like agents, see a workspace only once they’re in it — Owners and userAdmins administer every workspace. Inside a workspace a person reads, searches and posts to every message.</div>
+      <UsersGrid className="mt-5" />
+      <InviteUserModal open={inviting} onClose={() => setInviting(false)} />
     </div>
   )
 }
 
-
-/** Impact previews for People: role changes, transfer, suspend, remove. Nothing a person did is undone (rule 4). */
-function PersonConfirm({ acting, onClose }: { acting: PersonAction | null; onClose: () => void }) {
+export function UserDetail() {
   const d = useDB()
-  const h = acting?.h
-  if (!acting || !h) return <ImpactDialog open={false} onClose={onClose} title="" rows={[]} confirmLabel="" onConfirm={() => {}} />
-  const f = humanFootprint(d, h)
-  const others = orgAdmins(d).filter((x) => x.id !== h.id)
-  const fallback = (ws: Workspace[]) =>
-    ws.length ? `${ws.map((w) => w.name).join(', ')} — ${others.map((x) => x.name).join(' and ')} (org admins) become ${ws.length === 1 ? 'its' : 'their'} default admins` : 'None'
-  const standing: [string, ReactNode, ('amber' | 'red')?][] = [
-    ['Agents they registered', f.agents.length ? `${f.agents.map((a) => a.label).join(', ')} — unaffected; agents belong to the organization` : 'None'],
-    ['Admin rights they delegated', f.delegations.length ? `${f.delegations.map(({ w, m }) => `${principalName(d, m)} on ${w.name}`).join(', ')} — stand` : 'None'],
-    ['Members they added', f.added.length ? `${f.added.length} — stay` : 'None'],
-    ['Messages they sent', `${f.messages} — stay, under their name`],
-  ]
-  const spec =
-    acting.kind === 'role'
-      ? {
-          title: `Make ${h.name} a ${acting.role}?`,
-          rows: [
-            ['Org role', `${h.roles[d.currentOrgId]} → ${acting.role}`, 'amber'],
-            ['Workspaces', acting.role === 'userAdmin' ? 'Administers every workspace in the organization' : `Sees only ${f.memberships.map((w) => w.name).join(', ') || 'no workspaces'} (where they’ve been added)`],
-            ...(acting.role === 'user'
-              ? ([['Default admin of', ((ws) => (ws.length ? `${ws.map((w) => w.name).join(', ')} — no longer; ${others.map((x) => x.name).join(' and ')} remain default admins` : 'None'))(d.workspaces.filter((w) => w.orgId === d.currentOrgId && !explicitHumanAdmins(d, w).length))]] as [string, ReactNode][])
-              : []),
-            ...standing.slice(0, 2),
-          ] as [string, ReactNode, ('amber' | 'red')?][],
-          body: 'Permission is checked when an action happens; what they already did stays in place.',
-          confirm: acting.role === 'userAdmin' ? 'Make userAdmin' : 'Make user',
-          tone: acting.role === 'userAdmin' ? ('primary' as const) : ('danger' as const),
-          run: () => actions.setOrgRole(h.id, acting.role!),
-        }
-      : acting.kind === 'transfer'
-        ? {
-            title: `Transfer ownership of ${org(d)?.name} to ${h.name}?`,
-            rows: [
-              [h.name, `${h.roles[d.currentOrgId]} → Owner`, 'amber'],
-              ['You', 'Owner → userAdmin — you keep administering every workspace'],
-            ] as [string, ReactNode, ('amber' | 'red')?][],
-            body: 'Only an Owner can act on Owners. After this, the last-Owner protection applies to them.',
-            confirm: 'Transfer ownership',
-            tone: 'danger' as const,
-            run: () => actions.transferOwnership(h.id),
-          }
-        : {
-            title: acting.kind === 'suspend' ? `Suspend ${h.name}?` : `Remove ${h.name} from ${org(d)?.name}?`,
-            rows: [
-              ['Org role', `${h.roles[d.currentOrgId]}${acting.kind === 'remove' ? ' → none' : ''}`, 'amber'],
-              [acting.kind === 'remove' ? 'Their memberships' : 'Workspaces', f.memberships.map((w) => w.name).join(', ') || 'None', acting.kind === 'remove' && f.memberships.length ? 'amber' : undefined],
-              ['Only active explicit human admin in', fallback(f.lastExplicitAdminIn)],
-              ...standing,
-            ] as [string, ReactNode, ('amber' | 'red')?][],
-            body:
-              acting.kind === 'suspend'
-                ? `Blocks them from ${org(d)?.name} entirely until resumed — they can’t open anything here (their other organizations aren’t affected). Resume restores the status they had before. Losing permission doesn’t undo what was already done, and the audit log keeps their name on all of it.`
-                : 'Losing permission doesn’t undo what was already done. Agents they registered keep working, admin rights they delegated stand, and the audit log keeps their name on all of it.',
-            confirm: acting.kind === 'suspend' ? 'Suspend' : 'Remove from organization',
-            tone: 'danger' as const,
-            run: () => (acting.kind === 'suspend' ? actions.setHumanStatus(h.id, 'suspended') : actions.removeHuman(h.id)),
-          }
-  return <ImpactDialog open onClose={onClose} title={spec.title} rows={spec.rows} body={spec.body} confirmLabel={spec.confirm} confirmVariant={spec.tone} onConfirm={spec.run} />
+  const now = useNow()
+  const { userId } = useParams()
+  const h = humanById(d, userId)
+  const { menuFor, dialogs } = useUserActions()
+  // Only people in the organization on screen; their other organizations are never shown here.
+  if (!h || !h.roles[d.currentOrgId]) return <NoAccess what="person" back={{ to: '/players/users', label: 'Back to users' }} />
+  const mine = membershipsOf(d, { kind: 'human', id: h.id })
+  const registered = orgAgents(d).filter((a) => a.createdById === h.id)
+  const role = h.roles[d.currentOrgId]
+  return (
+    <div className="max-w-[1120px]">
+      <Breadcrumb items={[{ label: 'Players' }, { label: 'Users', to: '/players/users' }, { label: h.name }]} />
+      <PageTitle sub={<PersonStatus h={h} orgId={d.currentOrgId} />} actions={isOrgAdmin(d) && <Menu label={`Actions for ${h.name}`} items={menuFor(h)} />}>
+        {h.name}
+      </PageTitle>
+      <Card className="mt-5 grid max-w-[640px] grid-cols-[150px_1fr] gap-x-3 gap-y-2.5 p-5 text-[13px]">
+        <span className="text-zinc-500">User ID</span>
+        <span>
+          <CopyChip value={h.id} variant="inline" />
+        </span>
+        <span className="text-zinc-500">Email</span>
+        <span>{h.email}</span>
+        <span className="text-zinc-500">Org role</span>
+        <span>
+          {role}
+          {ORG_ADMIN_ROLES.includes(role) && <span className="text-xs text-zinc-500"> — administers every workspace in {org(d)?.name}</span>}
+        </span>
+        <span className="text-zinc-500">Last active</span>
+        <span>{h.id === d.currentUserId ? 'Now' : ago(h.lastActive, now)}</span>
+        <span className="text-zinc-500">Agents they registered</span>
+        <span>{registered.map((a) => a.label).join(', ') || 'None'} {registered.length > 0 && <span className="text-xs text-zinc-500">(audit only — agents belong to the organization)</span>}</span>
+      </Card>
+      <div className="eyebrow mt-7 mb-2.5">Workspaces</div>
+      <Table cols="1.4fr 1fr 1fr" head={['Workspace', 'Role', 'Write']} className="max-w-[760px]">
+        {mine.map(({ w, m }) => (
+          <Row key={w.id} cols="1.4fr 1fr 1fr">
+            <Link to={`/workspaces/${w.id}/members`} className="font-medium text-zinc-100 hover:text-white">
+              {w.name}
+            </Link>
+            <span className={cx(workspaceRole(d, w, { kind: 'human', id: h.id }) === 'Member' ? 'text-zinc-400' : 'text-green-400')}>{workspaceRole(d, w, { kind: 'human', id: h.id })}</span>
+            <span className="text-zinc-400">{m.write || ORG_ADMIN_ROLES.includes(role) ? 'Yes' : 'No (read-only)'}</span>
+          </Row>
+        ))}
+        {!mine.length && <div className="p-6 text-center text-sm2 text-zinc-500">{ORG_ADMIN_ROLES.includes(role) ? `Not a member of any workspace — as ${role} they administer all of them anyway.` : 'Not in any workspace yet.'}</div>}
+      </Table>
+      <div className="eyebrow mt-7 mb-1">Activity</div>
+      <div className="mb-3 text-xs text-zinc-500">{h.name}’s events in Dispatch, plus shared suite events about them (marked Shared).</div>
+      <AuditLog events={visibleEvents(d, { player: { kind: 'human', id: h.id } })} />
+      {dialogs}
+    </div>
+  )
 }

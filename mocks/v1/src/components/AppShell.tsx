@@ -14,8 +14,8 @@ export function AppShell() {
   // org yourself, the record you're leaving doesn't pull you back.
   useEffect(() => {
     const db = getDB()
-    const m = /^\/(workspaces|agents)\/([^/?]+)/.exec(pathname)
-    const recordOrg = m ? (m[1] === 'workspaces' ? wsById(db, m[2])?.orgId : agentById(db, m[2])?.orgId) : undefined
+    const m = /^\/(workspaces|players\/agents|agents|orgs)\/([^/?]+)/.exec(pathname)
+    const recordOrg = !m ? undefined : m[1] === 'workspaces' ? wsById(db, m[2])?.orgId : m[1] === 'orgs' ? db.orgs.find((o) => o.id === m[2])?.id : agentById(db, m[2])?.orgId
     if (recordOrg && recordOrg !== db.currentOrgId && me(db)?.roles[recordOrg]) actions.switchOrg(recordOrg)
   }, [pathname])
   // Only active members get the app. Suspended people and invitees see a full-screen gate instead — no sidebar,

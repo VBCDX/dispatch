@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ago, plural, until } from '../lib/format'
-import { actions, agentById, canAdmin, canPost, iAmActive, isExpired, MAX_ATTEMPTS, isOnline, myMembership, myWorkspaces, orgEvents, useDB, useNow, wsById } from '../lib/store'
+import { actions, agentById, canAdmin, canPost, iAmActive, isExpired, MAX_ATTEMPTS, isOnline, myWorkspaces, useDB, useNow, visibleEvents, workspaceRole, wsById } from '../lib/store'
 import type { Message } from '../lib/types'
 import { Composer, MessageCard, MessageDrawer, fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, ImpactDialog, ListBody, NoAccess, Tag, useRecordOrg } from '../components/shared'
@@ -14,49 +14,57 @@ import { TagInput, withDraftTag } from '../components/messages'
 const COLS = '1.5fr 1.4fr 1fr 1fr 0.9fr 0.8fr'
 export function WorkspacesList() {
   const d = useDB()
-  const nav = useNavigate()
-  const now = useNow()
   const [params, setParams] = useSearchParams()
   const [creating, setCreating] = useState(params.get('new') === '1')
   useEffect(() => {
     if (params.get('new')) setParams({}, { replace: true })
   }, []) // eslint-disable-line
-  const list = myWorkspaces(d)
   return (
     <div>
       <PageTitle actions={iAmActive(d) && <Button variant="primary" onClick={() => setCreating(true)}>New workspace</Button>}>Workspaces</PageTitle>
       <div className="mt-1 max-w-[760px] text-sm2 text-zinc-500">A workspace is a permission space: who may read and write, which agents are blocked, and a full audit of what happened. Messages are addressed to the workspace, not to a running process.</div>
-      <Table cols={COLS} head={['Name', 'Members', 'Messages · 24 h', 'Waiting on agents', 'Webhooks', 'Your role']} className="mt-5 max-w-[1080px]">
-        <ListBody cols={COLS} what="workspaces" empty={list.length ? undefined : <div className="p-10 text-center text-[13px] text-zinc-400">No workspaces yet. Create one to give agents a place to leave each other messages.</div>}>
-          {list.map((w) => {
-            const msgs = d.messages.filter((m) => m.wsId === w.id)
-            const day = msgs.filter((m) => now - m.createdAt < 86_400_000).length
-            const waiting = msgs.filter((m) => !isExpired(m, now) && Object.values(m.receipts).some((r) => !r.filtered && !r.ackAt)).length
-            const hooks = msgs.filter((m) => m.webhook && !isExpired(m, now)).length
-            const agents = w.members.filter((m) => m.kind === 'agent')
-            const online = agents.filter((m) => { const a = agentById(d, m.id); return a && isOnline(a) }).length
-            const role = myMembership(d, w)?.role
-            return (
-              <Row key={w.id} cols={COLS} onClick={() => nav(`/workspaces/${w.id}/messages`)}>
-                <div>
-                  <div className="font-medium">{w.name}</div>
-                  <div className="font-mono text-2xs text-zinc-600">{w.id}</div>
-                </div>
-                <div className="text-zinc-400">
-                  {plural(w.members.filter((m) => m.kind === 'human').length, 'human')} · {plural(agents.length, 'agent')} <span className="text-zinc-600">({online} online)</span>
-                  {w.agentBlocklist.length > 0 && <span className="ml-1.5 text-2xs text-red-400">{w.agentBlocklist.length} blocked</span>}
-                </div>
-                <div className="text-zinc-400">{day}</div>
-                <div className={waiting ? 'text-amber-400' : 'text-zinc-500'}>{waiting ? plural(waiting, 'message') : 'None'}</div>
-                <div className="text-zinc-400">{hooks || '—'}</div>
-                <div>{role ? <Pill tone={role === 'admin' ? 'green' : 'neutral'}>{role}</Pill> : <span className="text-xs text-zinc-500">org admin</span>}</div>
-              </Row>
-            )
-          })}
-        </ListBody>
-      </Table>
+      <WorkspacesTable className="mt-5 max-w-[1080px]" />
       <NewWorkspaceModal open={creating} onClose={() => setCreating(false)} />
     </div>
+  )
+}
+
+/** The workspaces you can see in the org on screen — also the Organizations › Workspaces tab. */
+export function WorkspacesTable({ className }: { className?: string }) {
+  const d = useDB()
+  const nav = useNavigate()
+  const now = useNow()
+  const list = myWorkspaces(d)
+  return (
+    <Table cols={COLS} head={['Name', 'Members', 'Messages · 24 h', 'Waiting on agents', 'Webhooks', 'Your role']} className={className}>
+      <ListBody cols={COLS} what="workspaces" empty={list.length ? undefined : <div className="p-10 text-center text-[13px] text-zinc-400">No workspaces yet. Create one to give agents a place to leave each other messages.</div>}>
+        {list.map((w) => {
+          const msgs = d.messages.filter((m) => m.wsId === w.id)
+          const day = msgs.filter((m) => now - m.createdAt < 86_400_000).length
+          const waiting = msgs.filter((m) => !isExpired(m, now) && Object.values(m.receipts).some((r) => !r.filtered && !r.ackAt)).length
+          const hooks = msgs.filter((m) => m.webhook && !isExpired(m, now)).length
+          const agents = w.members.filter((m) => m.kind === 'agent')
+          const online = agents.filter((m) => { const a = agentById(d, m.id); return a && isOnline(a) }).length
+          const role = workspaceRole(d, w, { kind: 'human', id: d.currentUserId })
+          return (
+            <Row key={w.id} cols={COLS} onClick={() => nav(`/workspaces/${w.id}/messages`)}>
+              <div>
+                <div className="font-medium">{w.name}</div>
+                <div className="font-mono text-2xs text-zinc-600">{w.id}</div>
+              </div>
+              <div className="text-zinc-400">
+                {plural(w.members.filter((m) => m.kind === 'human').length, 'human')} · {plural(agents.length, 'agent')} <span className="text-zinc-600">({online} online)</span>
+                {w.agentBlocklist.length > 0 && <span className="ml-1.5 text-2xs text-red-400">{w.agentBlocklist.length} blocked</span>}
+              </div>
+              <div className="text-zinc-400">{day}</div>
+              <div className={waiting ? 'text-amber-400' : 'text-zinc-500'}>{waiting ? plural(waiting, 'message') : 'None'}</div>
+              <div className="text-zinc-400">{hooks || '—'}</div>
+              <div>{role ? <Pill tone={role === 'Member' ? 'neutral' : 'green'}>{role}</Pill> : <span className="text-xs text-zinc-500">—</span>}</div>
+            </Row>
+          )
+        })}
+      </ListBody>
+    </Table>
   )
 }
 
@@ -345,7 +353,7 @@ export function WsMessages() {
                 if (!a) return null
                 const blocked = w.agentBlocklist.includes(a.id) || a.filters.workspaceBlocklist.includes(w.id)
                 return (
-                  <Link key={a.id} to={`/agents/${a.id}`} className="flex items-center gap-2 text-xs text-zinc-300 hover:text-white">
+                  <Link key={a.id} to={`/players/agents/${a.id}`} className="flex items-center gap-2 text-xs text-zinc-300 hover:text-white">
                     <span className={cx('size-1.5 rounded-full', blocked ? 'bg-red-500' : isOnline(a) ? 'bg-green-500' : 'bg-zinc-600')} />
                     <span className="font-mono">{a.label}</span>
                     <span className="ml-auto text-2xs text-zinc-500">{blocked ? 'blocked' : a.status !== 'active' ? a.status : isOnline(a) ? 'online' : `seen ${ago(a.lastSeen, now).toLowerCase()}`}</span>
@@ -541,7 +549,7 @@ export function WsAudit() {
   const w = useWorkspace()
   return (
     <div className="mt-5">
-      <AuditLog events={orgEvents(d).filter((e) => e.wsId === w.id)} hideWorkspaceFilter />
+      <AuditLog events={visibleEvents(d, { wsId: w.id })} hideWorkspaceFilter />
     </div>
   )
 }

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ago, initials, plural } from '../lib/format'
-import { actions, iAmActive, isExpired, isOnline, isOrgAdmin, me, myWorkspaces, org, orgAgents, orgEvents, principalName, useDB, useNow, wsById } from '../lib/store'
+import { actions, iAmActive, isExpired, isOnline, isOrgAdmin, me, myWorkspaces, org, orgAgents, principalName, useDB, useNow, visibleEvents, wsById } from '../lib/store'
 import { DispatchMark } from '../components/credential'
 import { fireSummary, receiptCounts } from '../components/messages'
 import { AuditLog, LogFeed, PrincipalChip, Tag } from '../components/shared'
@@ -18,7 +18,7 @@ function Checklist() {
   const target = withAgents ?? ws[0]
   const steps = [
     { t: 'Create a workspace', sub: 'A permission space: who reads, who writes, who’s blocked — and a full audit', done: ws.length > 0, to: '/workspaces?new=1' },
-    { t: 'Register two agents', sub: 'Just a name — each agent reports its own client (any MCP client, or REST) when it connects', done: agents.length >= 2, to: '/agents?new=1' },
+    { t: 'Register two agents', sub: 'Just a name — each agent reports its own client (any MCP client, or REST) when it connects', done: agents.length >= 2, to: '/players/agents?new=1' },
     { t: 'Add them to the workspace', sub: 'Each gets its own workspace token', done: !!withAgents, to: target ? `/workspaces/${target.id}/members` : '/workspaces' },
     { t: 'Send a message to the workspace', sub: 'Address all agents or just some. It waits for anyone not connected yet', done: d.messages.some((m) => ws.some((w) => w.id === m.wsId) && m.author.kind === 'human'), to: target ? `/workspaces/${target.id}/messages` : '/workspaces' },
     { t: 'Connect an agent', sub: 'Download its MCP or REST config — queued messages arrive the moment it connects', done: agents.some((a) => a.connected), to: target ? `/workspaces/${target.id}/connect` : '/workspaces' },
@@ -75,7 +75,7 @@ export function Home() {
   const now = useNow()
   const ws = new Set(myWorkspaces(d).map((w) => w.id))
   const msgs = d.messages.filter((m) => ws.has(m.wsId))
-  const events = orgEvents(d).filter((e) => !e.wsId || ws.has(e.wsId))
+  const events = visibleEvents(d)
   const day = msgs.filter((m) => now - m.createdAt < 86_400_000).length
   const waiting = msgs.filter((m) => !isExpired(m, now) && receiptCounts(m).total > receiptCounts(m).acked).length
   const failing = msgs.filter((m) => ['retrying', 'gave up'].includes(fireSummary(m, now, (id) => id)?.short ?? '')).length
@@ -91,7 +91,7 @@ export function Home() {
         <Stat label="Waiting on an ack" value={waiting} tone={waiting ? 'amber' : undefined} to="/search?state=waiting" />
         <Stat label="Webhooks failing" value={failing} tone={failing ? 'amber' : undefined} to="/audit" />
         <Stat label="Refused · 24 h" value={blocked} tone={blocked ? 'red' : undefined} to="/audit" />
-        <Stat label="Agents online" value={`${online} / ${agents.length}`} tone={online ? 'green' : undefined} to="/agents" />
+        <Stat label="Agents online" value={`${online} / ${agents.length}`} tone={online ? 'green' : undefined} to="/players/agents" />
       </div>
       {myWorkspaces(d).length > 0 && (
         <div className="mt-7 grid grid-cols-3 gap-4">
@@ -250,18 +250,18 @@ export function SearchPage() {
 
 export function AuditPage() {
   const d = useDB()
-  const ids = new Set(myWorkspaces(d).map((w) => w.id))
-  // Owners and org admins audit the whole org, deleted workspaces included; members see their workspaces.
+  // Context-aware: this org's Dispatch events plus the suite's shared org, workspace and player events (marked
+  // Shared). Org admins see the whole org, deleted workspaces included; a user sees their workspaces and their own actions.
   const all = isOrgAdmin(d)
   return (
     <div className="max-w-[1120px]">
       <PageTitle>Audit</PageTitle>
       <div className="mt-1 text-sm2 text-zinc-500">
-        Messages, per-agent receipts, webhook calls, access decisions and admin changes — including changes made by agents with delegated admin.
-        {all ? ' You see the whole organization, including workspaces that were deleted.' : ' You see the workspaces you belong to.'}
+        {org(d)?.name} in Dispatch: messages, per-agent receipts, webhook calls, access decisions and admin changes — including changes made by agents with delegated admin — plus shared suite events about the organization, its workspaces and players, marked <span className="text-zinc-300">Shared</span>. Keyhole’s own events stay in Keyhole.
+        {all ? ' You see the whole organization, including workspaces that were deleted.' : ' You see the workspaces you belong to and your own actions.'}
       </div>
       <div className="mt-4">
-        <AuditLog events={orgEvents(d).filter((e) => all || !e.wsId || ids.has(e.wsId))} />
+        <AuditLog events={visibleEvents(d)} />
       </div>
     </div>
   )

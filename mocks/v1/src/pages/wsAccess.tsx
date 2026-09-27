@@ -1,41 +1,30 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { evaluate, type Op } from '../lib/access'
-import { ago, clock, maskAgentToken, maskWsToken, plural } from '../lib/format'
-import { actions, agentById, canAdmin, clientLabel, defaultAdmins, isActive, statusIn, getDB, isExpired, isOrgAdmin, me, ORG_ADMIN_ROLES, orgAdmins, humanById, isOnline, orgAgents, orgHumans, principalName, sessionSecret, useDB, useNow } from '../lib/store'
-import type { AgentClient, Harness, Membership, MemberRole, OrgRole, Principal } from '../lib/types'
+import { ago, maskAgentToken, maskWsToken, plural } from '../lib/format'
+import { actions, agentById, canAdmin, isExpired, isOrgAdmin, isOnline, orgAgents, orgHumans, sessionSecret, useDB } from '../lib/store'
+import type { AgentClient, Harness, MemberRole } from '../lib/types'
 import { CopyChip, DispatchMark, KeyholeIcon } from '../components/credential'
 import { showSecret } from '../lib/secrets'
-import { accessImpactRows, ImpactDialog, PrincipalChip } from '../components/shared'
-import { Button, Callout, Card, Checkbox, Field, Footer, Menu, Modal, Pill, Row, Segmented, Select, Table, Toggle, cx } from '../components/ui'
+import { accessImpactRows, ImpactDialog } from '../components/shared'
+import { Button, Callout, Card, Checkbox, Field, Footer, Modal, Segmented, Select, cx } from '../components/ui'
+import { AgentsGrid, DefaultAdminsNote, UsersGrid } from './grids'
+import { showWsToken } from '../components/tokens'
 import { useWorkspace } from './workspaces'
 
 /* ------------------------------------------------------------------ */
 /* Members                                                             */
 /* ------------------------------------------------------------------ */
-const M_COLS = '1.6fr 1.1fr 60px 60px 1.2fr 1.6fr 36px'
-
-type Pending = { kind: 'delegate' | 'demote' | 'rotate' | 'remove' | 'read' | 'write'; m: Membership }
-
 export function WsMembers() {
   const d = useDB()
   const w = useWorkspace()
-  const now = useNow()
   const admin = canAdmin(d, w)
   const [adding, setAdding] = useState(false)
-  const [pending, setPending] = useState<Pending | null>(null)
-  const sorted = [...w.members].sort((a, b) => (a.kind === b.kind ? (a.role === b.role ? 0 : a.role === 'admin' ? -1 : 1) : a.kind === 'human' ? -1 : 1))
-  const p = (m: Membership): Principal => ({ kind: m.kind, id: m.id })
-  const isOrgAdminHuman = (m: Membership) => m.kind === 'human' && ORG_ADMIN_ROLES.includes(humanById(d, m.id)?.roles[d.currentOrgId] as OrgRole)
-  // With no explicit human admin, the org's Owners and userAdmins administer the workspace by default.
-  const defaults = defaultAdmins(d, w)
-  const defaultRows = defaults.filter((h) => !w.members.some((m) => m.kind === 'human' && m.id === h.id))
-
   return (
     <div className="mt-5">
       <div className="flex items-center justify-between gap-4">
-        <div className="max-w-[720px] text-sm2 text-zinc-500">
-          Humans and agents share one member list. An admin can add either kind and delegate admin to either kind. Each agent gets its <span className="text-zinc-300">own</span> workspace token, so removing one agent never disturbs another.
+        <div className="max-w-[760px] text-sm2 text-zinc-500">
+          The same Users and Agents grids as Players, filtered to {w.name}, with each one’s role here. Workspace admins add and remove members and delegate workspace admin — humans here, agents here or over the API. Each agent gets its <span className="text-zinc-300">own</span> workspace token, so removing one agent never disturbs another.
         </div>
         {admin && (
           <Button variant="primary" onClick={() => setAdding(true)}>
@@ -43,235 +32,14 @@ export function WsMembers() {
           </Button>
         )}
       </div>
-      {defaults.length > 0 && (
-        <Callout tone="neutral" className="mt-4">
-          No human is admin of {w.name} explicitly, so the organization’s Owners and userAdmins — {defaults.map((h) => h.name).join(', ')} — are its default admins. Every workspace has at least one human admin; agent admins never replace it. Delegate admin to a person here to set one explicitly.
-        </Callout>
-      )}
-      <Table cols={M_COLS} head={['Member', 'Role', 'Read', 'Write', 'Workspace token', 'Effective access', '']} className="mt-4">
-        {defaultRows.map((h) => (
-          <Row key={'default' + h.id} cols={M_COLS} className="bg-white/[0.01]">
-            <div className="min-w-0">
-              <PrincipalChip p={{ kind: 'human', id: h.id }} withKind />
-              <div className="mt-0.5 pl-[30px] text-2xs text-zinc-600">{h.email}</div>
-            </div>
-            <div>
-              <Pill tone="green">default admin</Pill>
-              <div className="mt-0.5 text-2xs text-zinc-500">org {h.roles[d.currentOrgId]}</div>
-            </div>
-            <span className="text-2xs text-zinc-500">Always</span>
-            <span className="text-2xs text-zinc-500">Always</span>
-            <span className="text-2xs text-zinc-600">Signs in with SSO</span>
-            <span className="text-xs text-zinc-400">Default admin (org {h.roles[d.currentOrgId]}) — not a member; can’t be removed here</span>
-            <span />
-          </Row>
-        ))}
-        {sorted.map((m) => {
-          const a = m.kind === 'agent' ? agentById(d, m.id) : null
-          const h = m.kind === 'human' ? humanById(d, m.id) : null
-          const r = a ? evaluate(d, a.id, w.id, 'read') : null
-          const wr = a ? evaluate(d, a.id, w.id, 'write') : null
-          const orgAdminHuman = isOrgAdminHuman(m)
-          const grace = m.prevTokenLast4 && m.prevTokenUntil && m.prevTokenUntil > now
-          return (
-            <Row key={m.kind + m.id} cols={M_COLS}>
-              <div className="min-w-0">
-                <PrincipalChip p={p(m)} withKind />
-                <div className="mt-0.5 pl-[30px] text-2xs text-zinc-600">
-                  {a ? `${a.id} · ${a.client ? clientLabel(a) : 'not connected yet'} · ${isOnline(a) ? 'online' : a.status !== 'active' ? a.status : `seen ${ago(a.lastSeen, now).toLowerCase()}`}` : h?.email}
-                </div>
-              </div>
-              <div>
-                <Pill tone={m.role === 'admin' ? 'green' : 'neutral'}>{m.role}</Pill>
-                {m.role !== 'admin' && defaults.some((h) => h.id === m.id) && <div className="mt-0.5 text-2xs text-green-400">default admin (org {humanById(d, m.id)?.roles[d.currentOrgId]})</div>}
-                {m.kind === 'human' && !isActive(humanById(d, m.id), w.orgId) && <div className="mt-0.5 text-2xs text-amber-400">{statusIn(humanById(d, m.id), w.orgId) ?? 'not in the org'} — can’t act{m.role === 'admin' ? '; not counted as the human admin' : ''}</div>}
-                {m.delegatedBy && <div className="mt-0.5 text-2xs text-zinc-500">delegated by {m.delegatedBy}</div>}
-              </div>
-              <div>
-                {m.kind === 'human' ? <span className="text-2xs text-zinc-500" title="Humans in a workspace always see every message">Always</span> : <Toggle on={m.read} disabled={!admin} label={`Read for ${principalName(d, p(m))}`} onChange={(v) => (v ? actions.setMember(w.id, p(m), { read: true }) : setPending({ kind: 'read', m }))} />}
-              </div>
-              <div title={orgAdminHuman ? `${humanById(d, m.id)?.roles[d.currentOrgId]}: org admins can always write in every workspace` : undefined}>
-                <Toggle on={m.write || orgAdminHuman} disabled={!admin || orgAdminHuman} label={`Write for ${principalName(d, p(m))}`} onChange={(v) => (v ? actions.setMember(w.id, p(m), { write: true }) : setPending({ kind: 'write', m }))} />
-                {orgAdminHuman && <div className="mt-0.5 text-2xs text-zinc-600">org admin</div>}
-              </div>
-              <div className="masked-token text-xs text-zinc-400">
-                {m.kind === 'agent' ? maskWsToken(m.tokenLast4 ?? '????') : <span className="font-sans tracking-normal text-zinc-600">Signs in with SSO</span>}
-                {grace && <div className="font-sans text-2xs tracking-normal text-amber-400">old ••••{m.prevTokenLast4} works until {clock(m.prevTokenUntil!)}</div>}
-              </div>
-              <div className="text-xs">
-                {m.kind === 'human' ? (
-                  <span className="text-zinc-400">Sees, searches and posts to every message{orgAdminHuman ? ' (org admin)' : !m.write && ' (read-only)'}</span>
-                ) : r?.allowed ? (
-                  <span className="text-green-400">
-                    Read ✓ {wr?.allowed ? 'Write ✓' : <span className="text-zinc-500">Write ✗</span>}
-                    {!wr?.allowed && <div className="text-2xs text-zinc-500">{wr?.reason}</div>}
-                  </span>
-                ) : (
-                  <span className="text-red-400">
-                    Blocked
-                    <div className="text-2xs text-zinc-400">{r?.reason}</div>
-                  </span>
-                )}
-              </div>
-              <div className="text-right">
-                {admin && (
-                  <Menu
-                    label={`Actions for ${principalName(d, p(m))}`}
-                    items={[
-                      m.role === 'admin'
-                        ? { label: 'Remove admin', onClick: () => setPending({ kind: 'demote', m }) }
-                        : { label: `Delegate admin to this ${m.kind}`, onClick: () => setPending({ kind: 'delegate', m }) },
-                      m.kind === 'agent' ? { label: 'Rotate workspace token', onClick: () => setPending({ kind: 'rotate', m }) } : null,
-                      { label: 'Remove from workspace', danger: true, onClick: () => setPending({ kind: 'remove', m }) },
-                    ]}
-                  />
-                )}
-              </div>
-            </Row>
-          )
-        })}
-      </Table>
-
+      <DefaultAdminsNote w={w} />
+      <div className="eyebrow mt-6 mb-2.5">Users</div>
+      <UsersGrid ws={w} />
+      <div className="eyebrow mt-7 mb-2.5">Agents</div>
+      <AgentsGrid ws={w} />
       <AddMemberModal open={adding} onClose={() => setAdding(false)} onToken={(t, agentId) => showWsToken(w, agentId, t, 'Agent added')} />
-      <MemberConfirm pending={pending} onClose={() => setPending(null)} />
     </div>
   )
-}
-
-/** Impact previews for the member ⋯ menu: delegation, removing admin, rotation and removal. */
-function MemberConfirm({ pending, onClose }: { pending: Pending | null; onClose: () => void }) {
-  const d = useDB()
-  const w = useWorkspace()
-  const m = pending?.m
-  const name = m ? principalName(d, { kind: m.kind, id: m.id }) : ''
-  // Demoting or removing the last explicit human admin is allowed: the org's Owners and userAdmins become default admins.
-  const losesLastHuman = !!m && m.kind === 'human' && m.role === 'admin' && (pending?.kind === 'demote' || pending?.kind === 'remove') && !w.members.some((x) => x !== m && x.kind === 'human' && x.role === 'admin')
-  const otherAdmins = w.members.filter((x) => x !== m && x.role === 'admin').map((x) => principalName(d, { kind: x.kind, id: x.id }))
-  const defaultNames = orgAdmins(d).map((h) => h.name)
-  const fallbackNote = losesLastHuman && (
-    <Callout tone="neutral">
-      {defaultNames.length > 1 ? `${defaultNames.slice(0, -1).join(', ')} and ${defaultNames[defaultNames.length - 1]}` : defaultNames[0]} (org admins) become this workspace’s default admins.
-      {otherAdmins.length > 0 && ` ${otherAdmins.join(', ')} keep${otherAdmins.length === 1 ? 's' : ''} admin too, but a workspace is never administered by agents alone.`} The audit log records the fallback.
-    </Callout>
-  )
-  const self = m?.kind === 'human' && m.id === d.currentUserId
-  const p = m ? ({ kind: m.kind, id: m.id } as Principal) : null
-
-  const spec: { title: string; rows: [string, ReactNode, ('amber' | 'red')?][]; body: ReactNode; confirm: string; tone: 'danger' | 'primary'; run: () => void } | null =
-    !pending || !m || !p
-      ? null
-      : pending.kind === 'delegate'
-        ? {
-            title: `Delegate admin on ${w.name} to ${name}?`,
-            rows: [
-              ['Kind', m.kind],
-              ['Can then', 'Add and remove members, delegate or remove admin, set the blocklist, rotate workspace tokens, expire any message, rotate listener passwords, read the audit log, change settings', 'amber'],
-              ['Through', m.kind === 'agent' ? 'The REST API and MCP, with its own agent + workspace tokens' : 'The web app'],
-              ['Audited as', m.kind === 'agent' ? `“${name} … — as delegated admin” (agent actions)` : `${name}’s own actions`],
-            ],
-            body: m.kind === 'agent' ? `${name} acts on its own, without a human in the loop. You can remove admin again from this menu.` : 'You can remove admin again from this menu.',
-            confirm: 'Delegate admin',
-            tone: 'primary',
-            run: () => actions.setMember(w.id, p, { role: 'admin' }),
-          }
-        : pending.kind === 'demote'
-          ? {
-              title: `Remove admin from ${self ? 'yourself' : name}?`,
-              rows: [
-                ['Kind', m.kind],
-                ['Role after', 'member — keeps its read and write access'],
-                ['Explicit admins left', otherAdmins.join(', ') || '—'],
-                ['Human admin', losesLastHuman ? `Default admins: ${defaultNames.join(', ')} (org Owners/userAdmins)` : 'Unchanged'],
-                ['Admin rights they delegated', 'Stand — nothing cascades from losing admin'],
-              ],
-              body: (
-                <div className="flex flex-col gap-2.5">
-                  {self && <div>{ORG_ADMIN_ROLES.includes(me(d).roles[d.currentOrgId]) ? 'You keep admin here through your org role.' : 'You lose admin here as soon as you confirm.'}</div>}
-                  {fallbackNote}
-                </div>
-              ),
-              confirm: 'Remove admin',
-              tone: 'danger',
-              run: () => actions.setMember(w.id, p, { role: 'member' }),
-            }
-          : pending.kind === 'read'
-            ? {
-                title: `Turn off reading for ${name} in ${w.name}?`,
-                rows: [
-                  ['Read', 'on → off', 'amber'],
-                  ['Write', m.write ? 'on → off — writing without reading makes no sense' : 'already off', m.write ? 'amber' : undefined],
-                  ['Reads here after this', 'Nothing — refused at rule 5 (membership allows read)'],
-                  ...accessImpactRows(d, m.id, w.id, false),
-                ],
-                body: 'Reversible: turn Read (or Write, which turns Read back on too) on again and held messages are delivered — access is re-checked at delivery. Nothing already recorded changes.',
-                confirm: 'Turn off read',
-                tone: 'danger',
-                run: () => actions.setMember(w.id, p, { read: false }),
-              }
-            : pending.kind === 'write'
-              ? {
-                  title: `Turn off writing for ${name} in ${w.name}?`,
-                  rows: [
-                    ['Can no longer', m.kind === 'agent' ? 'Send messages, retry webhooks, write shared context' : 'Post, retry webhooks, edit shared context', 'amber'],
-                    ['Still can', m.kind === 'agent' ? 'Read what’s addressed to it' : 'See and search every message'],
-                    ['Already sent', 'Stays as it is'],
-                  ],
-                  body: 'Reversible: turn Write back on at any time.',
-                  confirm: 'Turn off write',
-                  tone: 'danger',
-                  run: () => actions.setMember(w.id, p, { write: false }),
-                }
-              : pending.kind === 'rotate'
-            ? {
-                title: `Rotate ${name}’s workspace token?`,
-                rows: [
-                  ['Current token', `${maskWsToken(m.tokenLast4 ?? '')} — keeps working for 10 minutes`, 'amber'],
-                  ['Other agents', 'Unaffected — each has its own token'],
-                  ['Agent token', 'Unchanged'],
-                ],
-                body: 'The new token is shown once. Put it in the agent’s config within 10 minutes; after that the old one is refused.',
-                confirm: 'Rotate token',
-                tone: 'danger',
-                run: () => {
-                  const t = actions.rotateMemberToken(w.id, m.id)
-                  if (t) showWsToken(w, m.id, t, 'Workspace token rotated', <>The old token works until {clock(Date.now() + 10 * 60_000)}. <Link to={`/workspaces/${w.id}/connect?agent=${m.id}`}>Open connection instructions →</Link></>)
-                },
-              }
-            : {
-                title: `Remove ${name} from ${w.name}?`,
-                rows: [
-                  ['Kind', m.kind],
-                  ['Role', m.role + (m.delegatedBy ? ` (delegated by ${m.delegatedBy})` : '')],
-                  ...(m.kind === 'agent' ? accessImpactRows(d, m.id, w.id, true) : []),
-                  ['Workspace token', m.kind === 'agent' ? `${maskWsToken(m.tokenLast4 ?? '')} — stops working immediately` : '—', m.kind === 'agent' ? 'amber' : undefined],
-                ],
-                body: (
-                  <div className="flex flex-col gap-2.5">
-                    <div>Its past messages and receipts stay in the workspace and the audit log. Admin rights it delegated stand.</div>
-                    {fallbackNote}
-                  </div>
-                ),
-                confirm: 'Remove member',
-                tone: 'danger',
-                run: () => actions.removeMember(w.id, p),
-              }
-  return <ImpactDialog open={!!spec} onClose={onClose} title={spec?.title ?? ''} rows={spec?.rows ?? []} body={spec?.body} confirmLabel={spec?.confirm ?? ''} confirmVariant={spec?.tone} onConfirm={() => spec?.run()} />
-}
-
-/** Hands a freshly issued workspace token to the root secret host. */
-export function showWsToken(w: { id: string; name: string }, agentId: string, token: string, title: string, note?: ReactNode) {
-  const label = agentById(getDB(), agentId)?.label ?? agentId
-  showSecret({
-    kind: 'token',
-    title,
-    token,
-    subtitle: (
-      <span>
-        <span className="font-mono">{label}</span> in {w.name}. This agent presents it together with its agent ID + agent token and <span className="font-mono">X-Dispatch-Workspace-Id: {w.id}</span>.
-      </span>
-    ),
-    note: note ?? <Link to={`/workspaces/${w.id}/connect?agent=${agentId}`}>Open connection instructions →</Link>,
-  })
 }
 
 function AddMemberModal({ open, onClose, onToken }: { open: boolean; onClose: () => void; onToken: (t: string, agentId: string) => void }) {
@@ -317,11 +85,11 @@ function AddMemberModal({ open, onClose, onToken }: { open: boolean; onClose: ()
           <div className="text-sm2 text-zinc-500">
             {kind === 'agent' ? (
               <>
-                Every agent is already here. <Link to="/agents?new=1">Register a new agent</Link>
+                Every agent is already here. {isOrgAdmin(d) ? <Link to="/players/agents?new=1">Register a new agent</Link> : 'Org admins register new agents.'}
               </>
             ) : (
               <>
-                Everyone is already here. <Link to="/people">Invite someone</Link>
+                Everyone is already here. {isOrgAdmin(d) ? <Link to="/players/users">Invite someone</Link> : 'Org admins invite new people.'}
               </>
             )}
           </div>
@@ -334,7 +102,7 @@ function AddMemberModal({ open, onClose, onToken }: { open: boolean; onClose: ()
           onChange={setRole}
           options={[
             { value: 'member', label: 'Member' },
-            { value: 'admin', label: 'Admin' },
+            { value: 'admin', label: 'Workspace admin' },
           ]}
         />
       </Field>
@@ -445,17 +213,17 @@ export function WsAccess() {
         <ul className="mt-3 mb-0 flex list-none flex-col gap-2 pl-0 text-xs">
           {selfBlocks.map((a) => (
             <li key={a.id}>
-              <Link to={`/agents/${a.id}`} className="font-mono">{a.label}</Link> <span className="text-zinc-400">blocks {w.name} — it can’t enter even though {w.members.some((m) => m.id === a.id) ? 'it’s a member' : 'it could be invited'}.</span>
+              <Link to={`/players/agents/${a.id}`} className="font-mono">{a.label}</Link> <span className="text-zinc-400">blocks {w.name} — it can’t enter even though {w.members.some((m) => m.id === a.id) ? 'it’s a member' : 'it could be invited'}.</span>
             </li>
           ))}
           {narrowed.map((a) => (
             <li key={a.id}>
-              <Link to={`/agents/${a.id}`} className="font-mono">{a.label}</Link> <span className="text-zinc-400">has turned {!a.filters.read ? 'reading' : 'writing'} off for itself.</span>
+              <Link to={`/players/agents/${a.id}`} className="font-mono">{a.label}</Link> <span className="text-zinc-400">has turned {!a.filters.read ? 'reading' : 'writing'} off for itself.</span>
             </li>
           ))}
           {authorBlocks.map((a) => (
             <li key={a.id}>
-              <Link to={`/agents/${a.id}`} className="font-mono">{a.label}</Link> <span className="text-zinc-400">doesn’t receive messages from {a.filters.agentBlocklist.map((id) => agentById(d, id)?.label).join(', ')}.</span>
+              <Link to={`/players/agents/${a.id}`} className="font-mono">{a.label}</Link> <span className="text-zinc-400">doesn’t receive messages from {a.filters.agentBlocklist.map((id) => agentById(d, id)?.label).join(', ')}.</span>
             </li>
           ))}
           {!selfBlocks.length && !narrowed.length && !authorBlocks.length && <li className="text-zinc-500">None.</li>}

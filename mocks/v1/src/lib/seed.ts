@@ -15,17 +15,20 @@ const PEOPLE: Record<string, { lastActiveAgo: number | null; sessions: { device:
   u_dana: { lastActiveAgo: 0, sessions: [{ device: 'MacBook Pro', place: 'San Francisco', ago: 0 }, { device: 'iPhone', place: 'San Francisco', ago: 2 * HOUR }] },
   u_ravi: { lastActiveAgo: 2 * HOUR, sessions: [{ device: 'ThinkPad', place: 'Austin', ago: 2 * HOUR }] },
   u_mia: { lastActiveAgo: 6 * MIN, sessions: [{ device: 'MacBook Air', place: 'Seattle', ago: 6 * MIN }] },
-  u_sam: { lastActiveAgo: HOUR, sessions: [] },
+  u_sam: { lastActiveAgo: null, sessions: [] },
   u_jo: { lastActiveAgo: 6 * DAY, sessions: [] },
   u_leo: { lastActiveAgo: 3 * HOUR, sessions: [{ device: 'Linux desktop', place: 'Portland', ago: 3 * HOUR }] },
   u_noor: { lastActiveAgo: 5 * HOUR, sessions: [{ device: 'MacBook Pro', place: 'Toronto', ago: 5 * HOUR }] },
 }
 
+/** Keyhole seeds Sam as a pending invite to Acme; Dispatch does too, so the shared grids match. */
+const INVITED: Record<string, string> = { u_sam: 'org_acme' }
+
 function human(now: number, id: string): Human {
   const u = SUITE_USERS.find((x) => x.id === id)!
   const p = PEOPLE[id]
   // Suspended memberships remember they were active, so Resume restores that.
-  const orgStatus = Object.fromEntries(Object.keys(u.roles).map((o) => [o, u.suspended?.[o] ? ('suspended' as const) : ('active' as const)]))
+  const orgStatus = Object.fromEntries(Object.keys(u.roles).map((o) => [o, u.suspended?.[o] ? ('suspended' as const) : INVITED[id] === o ? ('invited' as const) : ('active' as const)]))
   const suspendedFrom = u.suspended ? Object.fromEntries(Object.keys(u.suspended).map((o) => [o, 'active' as const])) : undefined
   return { id, name: u.name, email: u.email, roles: { ...u.roles }, orgStatus, ...(suspendedFrom ? { suspendedFrom } : {}), lastActive: p.lastActiveAgo == null ? null : now - p.lastActiveAgo, sessions: p.sessions.map((s) => ({ device: s.device, place: s.place, at: now - s.ago })) }
 }
@@ -329,6 +332,7 @@ export function populatedDB(): DB {
     ev('ev_12', 1 * DAY, { wsId: 'ws_incidents', type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Delegated admin on Incidents to Mia Chen (human)', result: 'Done', trk: 'trk_dl9a0012', shared: true }),
     ev('ev_13', 2 * DAY, { wsId: 'ws_incidents', type: 'admin', severity: 'info', actor: 'Ravi Mehta', actorKind: 'human', actorId: 'u_ravi', object: 'Added web-scraper to Incidents blocklist', result: 'Done', trk: 'trk_bl0c0013' }),
     ev('ev_14', 3 * DAY, { type: 'admin', severity: 'warn', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Suspended Jo Reyes', result: 'Unaffected: 0 agents they registered, 0 admin delegations', trk: 'trk_su5p0014', detail: [['Human ID', 'u_jo'], ['Before', 'active'], ['After', 'suspended']], shared: true }),
+    ev('ev_16', 2 * DAY, { type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Invited sam@acme.com as user', result: 'Done', trk: 'trk_1nv10016', shared: true }),
     ev('ev_15', 3 * DAY, { type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Suspended agent triage-bot', result: 'Done', trk: 'trk_su5p0015', detail: [['Agent ID', 'ag_triage'], ['Before', 'active'], ['After', 'suspended']] }),
     { id: 'ev_n1', at: now - 2 * HOUR, orgId: 'org_nw', wsId: 'ws_docs', type: 'message', severity: 'ok', actor: 'Mia Chen', actorKind: 'human', actorId: 'u_mia', object: 'Posted to Docs site · #docs #changelog', result: 'For 1 agent', trk: 'trk_nw0000n1' },
     { id: 'ev_n2', at: now - 10 * DAY, orgId: 'org_nw', wsId: 'ws_docs', type: 'admin', severity: 'info', actor: 'Leo Park', actorKind: 'human', actorId: 'u_leo', object: 'Added Noor Haddad (human) to Docs site as member', result: 'Done', trk: 'trk_nw0000n2', shared: true },
