@@ -105,3 +105,29 @@ export const SUITE_AGENTS: { id: string; orgId: string; label: string; createdBy
   { id: 'ag_oldci', orgId: 'org_acme', label: 'old-ci', createdBy: 'Ravi Mehta' },
   { id: 'ag_docsbot', orgId: 'org_nw', label: 'docs-bot', createdBy: 'Leo Park' },
 ]
+
+/**
+ * Shared audit history: suite-level facts about the organizations, workspaces and players, seeded identically in
+ * both apps and marked "Shared" there. Only suite facts belong here — never app-only details (Dispatch read/write,
+ * agent workspace admins or tokens; Keyhole stores, cabinets, connectors or sidecars). Each app renders `object`
+ * as the row's text and `actorId` under the actor's current name.
+ */
+export const SUITE_EVENTS: {
+  id: string
+  orgId: string
+  /** The workspace the event belongs to, when there is one. */
+  workspaceId?: string
+  minutesAgo: number
+  /** A suite user ID (u_…). */
+  actorId: string
+  object: string
+  severity: 'info' | 'warn'
+  detail?: [string, string][]
+}[] = [
+  { id: 'se_incidents_triage', orgId: 'org_acme', workspaceId: 'ws_incidents', minutesAgo: 20 * 24 * 60, actorId: 'u_ravi', object: 'Added triage-bot (agent) to Incidents as member', severity: 'info', detail: [['Agent ID', 'ag_triage'], ['Before', 'not a member'], ['After', 'member']] },
+  { id: 'se_docs_noor', orgId: 'org_nw', workspaceId: 'ws_docs', minutesAgo: 12 * 24 * 60, actorId: 'u_leo', object: 'Added Noor Haddad (human) to Docs site as member', severity: 'info', detail: [['Human ID', 'u_noor'], ['Before', 'not a member'], ['After', 'member']] },
+  { id: 'se_docs_docsbot', orgId: 'org_nw', workspaceId: 'ws_docs', minutesAgo: 10 * 24 * 60, actorId: 'u_noor', object: 'Added docs-bot (agent) to Docs site as member', severity: 'info', detail: [['Agent ID', 'ag_docsbot'], ['Before', 'not a member'], ['After', 'member']] },
+  { id: 'se_jo_suspended', orgId: 'org_acme', minutesAgo: 3 * 24 * 60, actorId: 'u_dana', object: 'Suspended Jo Reyes', severity: 'warn', detail: [['Human ID', 'u_jo'], ['Before', 'active'], ['After', 'suspended']] },
+  { id: 'se_sam_invited', orgId: 'org_acme', minutesAgo: 2 * 24 * 60, actorId: 'u_dana', object: 'Invited sam@acme.com as user', severity: 'info', detail: [['Org role', 'user']] },
+  { id: 'se_incidents_mia_admin', orgId: 'org_acme', workspaceId: 'ws_incidents', minutesAgo: 24 * 60, actorId: 'u_dana', object: 'Made Mia Chen workspace admin of Incidents', severity: 'info', detail: [['Human ID', 'u_mia'], ['Before', 'member'], ['After', 'workspace admin']] },
+]
