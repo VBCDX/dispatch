@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/org_settings.schema.json",
+  "title": "Dispatch org settings",
+  "description": "dispatch.org_settings — Dispatch's per-org settings (_id = orgId).",
+  "type": "object",
+  "required": [
+    "_id",
+    "notifications",
+    "updatedAt"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "notifications": {
+      "type": "object",
+      "properties": {
+        "webhookFailing": {
+          "type": "boolean"
+        },
+        "blockedAttempt": {
+          "type": "boolean"
+        },
+        "messageExpiring": {
+          "type": "boolean"
+        },
+        "agentOffline": {
+          "type": "boolean"
+        },
+        "memberAdded": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "defaultGraceSeconds": {
+      "$ref": "../shared/common.schema.json#/$defs/graceSeconds"
+    },
+    "updatedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "updatedBy": {
+      "$ref": "../shared/common.schema.json#/$defs/principalRef"
+    }
+  },
+  "additionalProperties": false
+}

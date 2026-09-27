@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/workspace_settings.schema.json",
+  "title": "Dispatch workspace settings",
+  "description": "dispatch.workspace_settings — Dispatch's extension of suite.workspaces (_id = workspaceId).",
+  "type": "object",
+  "required": [
+    "_id",
+    "orgId",
+    "defaultExpiryHours",
+    "retentionDays",
+    "agentBlocklist",
+    "updatedAt",
+    "rev"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "defaultExpiryHours": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "description": "null: no default expiry.",
+          "minimum": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retentionDays": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3650
+    },
+    "agentBlocklist": {
+      "$ref": "filters.schema.json#/$defs/workspaceBlocklist"
+    },
+    "updatedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "updatedBy": {
+      "$ref": "../shared/common.schema.json#/$defs/actorRef"
+    },
+    "rev": {
+      "$ref": "../shared/common.schema.json#/$defs/rev"
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "_id": "ws_incidents",
+      "orgId": "org_acme",
+      "description": "Live incidents. Humans approve every production change here.",
+      "defaultExpiryHours": 48,
+      "retentionDays": 365,
+      "agentBlocklist": [
+        "ag_scraper"
+      ],
+      "updatedAt": "2026-09-20T10:00:00Z",
+      "rev": 4
+    }
+  ]
+}

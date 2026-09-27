@@ -1,0 +1,616 @@
+{
+  "$comment": "Every collection's validator is its schema file converted by shared/tools/mongo_validator.py ($ref inlined, dates → bsonType date, const → enum, if/then → anyOf[not if, then], unsupported keywords dropped). Tenancy: every index starts with orgId except the auth-path indexes marked `\"global\": true`, which look up a credential digest or public ID before the org is known; the handler then checks the row's orgId. MongoDB 7.0+ (partial indexes with $in).",
+  "database": "dispatch",
+  "collections": {
+    "messages": {
+      "schema": "message.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "createdAt": -1
+          },
+          "name": "org_ws_created"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "threadRootId": 1,
+            "createdAt": 1
+          },
+          "name": "org_ws_thread"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "tags": 1,
+            "createdAt": -1
+          },
+          "name": "org_ws_tags"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "author.kind": 1,
+            "author.id": 1,
+            "createdAt": -1
+          },
+          "name": "org_author"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "body.text": "text",
+            "body.preview": "text",
+            "tags": "text"
+          },
+          "name": "org_ws_text",
+          "default_language": "none"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "expiresAt": 1
+          },
+          "name": "org_expires",
+          "partialFilterExpression": {
+            "expiresAt": {
+              "$type": "date"
+            }
+          }
+        },
+        {
+          "key": {
+            "deleteAt": 1
+          },
+          "name": "ttl_deleteAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    },
+    "message_blobs": {
+      "schema": "message_blob.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "messageId": 1
+          },
+          "name": "org_message"
+        },
+        {
+          "key": {
+            "deleteAt": 1
+          },
+          "name": "ttl_deleteAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    },
+    "receipts": {
+      "schema": "receipt.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "agentId": 1,
+            "state": 1,
+            "createdAt": 1
+          },
+          "name": "org_agent_state"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "agentId": 1,
+            "state": 1
+          },
+          "name": "org_ws_agent_state"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "messageId": 1
+          },
+          "name": "org_message"
+        },
+        {
+          "key": {
+            "deleteAt": 1
+          },
+          "name": "ttl_deleteAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    },
+    "threads": {
+      "schema": "thread.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "lastReplyAt": -1
+          },
+          "name": "org_ws_last"
+        },
+        {
+          "key": {
+            "deleteAt": 1
+          },
+          "name": "ttl_deleteAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    },
+    "tags": {
+      "schema": "tag.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "lastUsedAt": -1
+          },
+          "name": "org_ws_used"
+        }
+      ]
+    },
+    "context_notes": {
+      "schema": "context_note.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "updatedAt": -1
+          },
+          "name": "org_ws_updated"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "title": "text",
+            "body": "text"
+          },
+          "name": "org_ws_text",
+          "default_language": "none"
+        }
+      ]
+    },
+    "context_note_versions": {
+      "schema": "context_note_version.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "noteId": 1,
+            "version": -1
+          },
+          "name": "org_note_version",
+          "unique": true
+        }
+      ]
+    },
+    "workspace_settings": {
+      "schema": "workspace_settings.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "agentBlocklist": 1
+          },
+          "name": "org_blocklist"
+        }
+      ]
+    },
+    "membership_access": {
+      "schema": "membership_access.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "token.current.hash": 1
+          },
+          "name": "token_hash",
+          "unique": true,
+          "partialFilterExpression": {
+            "token.current.hash": {
+              "$exists": true
+            }
+          },
+          "global": true
+        },
+        {
+          "key": {
+            "token.previous.digest.hash": 1
+          },
+          "name": "token_hash_prev",
+          "unique": true,
+          "partialFilterExpression": {
+            "token.previous.digest.hash": {
+              "$exists": true
+            }
+          },
+          "global": true
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1
+          },
+          "name": "org_ws"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "member.id": 1
+          },
+          "name": "org_member"
+        }
+      ]
+    },
+    "agent_profiles": {
+      "schema": "agent_profile.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "token.current.hash": 1
+          },
+          "name": "token_hash",
+          "unique": true,
+          "partialFilterExpression": {
+            "token.current.hash": {
+              "$exists": true
+            }
+          },
+          "global": true
+        },
+        {
+          "key": {
+            "token.previous.digest.hash": 1
+          },
+          "name": "token_hash_prev",
+          "unique": true,
+          "partialFilterExpression": {
+            "token.previous.digest.hash": {
+              "$exists": true
+            }
+          },
+          "global": true
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "status": 1
+          },
+          "name": "org_status"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "filters.agentBlocklist": 1
+          },
+          "name": "org_agent_blocklist"
+        }
+      ]
+    },
+    "webhooks": {
+      "schema": "webhook.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "messageId": 1
+          },
+          "name": "org_message",
+          "unique": true
+        },
+        {
+          "key": {
+            "listen.listenerId": 1
+          },
+          "name": "listener",
+          "unique": true,
+          "partialFilterExpression": {
+            "listen.listenerId": {
+              "$exists": true
+            }
+          },
+          "global": true
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "fire.state": 1,
+            "fire.nextAttemptAt": 1
+          },
+          "name": "org_fire_due",
+          "partialFilterExpression": {
+            "fire.state": {
+              "$in": [
+                "waiting",
+                "retrying"
+              ]
+            }
+          }
+        },
+        {
+          "key": {
+            "fire.delivery.sidecarId": 1,
+            "fire.state": 1
+          },
+          "name": "sidecar_pull",
+          "partialFilterExpression": {
+            "fire.delivery.mode": "sidecar_pull"
+          },
+          "global": true
+        },
+        {
+          "key": {
+            "deleteAt": 1
+          },
+          "name": "ttl_deleteAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    },
+    "listener_calls": {
+      "schema": "listener_call.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "listenerId": 1,
+            "at": -1
+          },
+          "name": "org_listener_at"
+        },
+        {
+          "key": {
+            "deleteAt": 1
+          },
+          "name": "ttl_deleteAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    },
+    "webhook_dead_letters": {
+      "schema": "webhook_dead_letter.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "deadAt": -1
+          },
+          "name": "org_ws_dead"
+        },
+        {
+          "key": {
+            "deleteAt": 1
+          },
+          "name": "ttl_deleteAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    },
+    "sealed_secrets": {
+      "schema": "sealed_secret.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "owner.id": 1
+          },
+          "name": "org_owner"
+        },
+        {
+          "key": {
+            "destroyAt": 1
+          },
+          "name": "ttl_destroyAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    },
+    "sidecars": {
+      "schema": "sidecar.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "credential.current.hash": 1
+          },
+          "name": "credential_hash",
+          "unique": true,
+          "partialFilterExpression": {
+            "credential.current.hash": {
+              "$exists": true
+            }
+          },
+          "global": true
+        },
+        {
+          "key": {
+            "credential.previous.digest.hash": 1
+          },
+          "name": "credential_hash_prev",
+          "unique": true,
+          "partialFilterExpression": {
+            "credential.previous.digest.hash": {
+              "$exists": true
+            }
+          },
+          "global": true
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "agentId": 1,
+            "status": 1
+          },
+          "name": "org_agent_status"
+        }
+      ]
+    },
+    "enrollment_tokens": {
+      "schema": "enrollment_token.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "token.hash": 1
+          },
+          "name": "token_hash",
+          "unique": true,
+          "global": true
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "status": 1,
+            "expiresAt": 1
+          },
+          "name": "org_status_exp"
+        },
+        {
+          "key": {
+            "deleteAt": 1
+          },
+          "name": "ttl_deleteAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    },
+    "org_settings": {
+      "schema": "org_settings.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": []
+    },
+    "audit_events": {
+      "schema": "../shared/audit_event.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "orgId": 1,
+            "at": -1
+          },
+          "name": "org_at"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "workspaceId": 1,
+            "at": -1
+          },
+          "name": "org_ws_at"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "actor.id": 1,
+            "at": -1
+          },
+          "name": "org_actor_at"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "subject.id": 1,
+            "at": -1
+          },
+          "name": "org_subject_at"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "trk": 1
+          },
+          "name": "org_trk"
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "causationId": 1
+          },
+          "name": "org_causation",
+          "partialFilterExpression": {
+            "causationId": {
+              "$exists": true
+            }
+          }
+        },
+        {
+          "key": {
+            "orgId": 1,
+            "type": 1,
+            "at": -1
+          },
+          "name": "org_type_at"
+        },
+        {
+          "key": {
+            "expireAt": 1
+          },
+          "name": "ttl_expireAt",
+          "expireAfterSeconds": 0
+        }
+      ],
+      "detailSchema": "audit_detail.schema.json",
+      "$comment": "Dispatch-only rows (shared: false)."
+    },
+    "applied_events": {
+      "schema": "../shared/applied_event.schema.json",
+      "validationLevel": "strict",
+      "validationAction": "error",
+      "indexes": [
+        {
+          "key": {
+            "deleteAt": 1
+          },
+          "name": "ttl_deleteAt",
+          "expireAfterSeconds": 0
+        }
+      ]
+    }
+  }
+}

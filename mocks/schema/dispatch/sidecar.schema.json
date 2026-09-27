@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/sidecar.schema.json",
+  "title": "Dispatch sidecar",
+  "description": "dispatch.sidecars — a local process bound to one agent. It holds that agent's dsp_agent_ and dsp_ws_ tokens in its encrypted cache (sealed to its public key on delivery) so the agent process never sees them, exposes HTTP/SSE/MCP locally, and pulls webhook deliveries from Dispatch so listeners behind firewalls need no ingress.",
+  "type": "object",
+  "required": [
+    "_id",
+    "orgId",
+    "agentId",
+    "name",
+    "status",
+    "enrollment",
+    "credential",
+    "local",
+    "pull",
+    "health",
+    "cachePolicy",
+    "createdAt",
+    "createdBy",
+    "updatedAt",
+    "rev"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/dispatchSidecarId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "agentId": {
+      "$ref": "../shared/common.schema.json#/$defs/agentId",
+      "description": "Bound agent. One active sidecar per agent per host."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "status": {
+      "enum": [
+        "active",
+        "revoked"
+      ]
+    },
+    "enrollment": {
+      "$ref": "../shared/common.schema.json#/$defs/enrollment"
+    },
+    "credential": {
+      "$ref": "../shared/common.schema.json#/$defs/credentialSet",
+      "description": "dsp_sc_… — authenticates the sidecar's control channel. Separate from the agent's own tokens."
+    },
+    "local": {
+      "$ref": "../shared/common.schema.json#/$defs/localEndpoint"
+    },
+    "heldTokens": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "tokenLast4",
+          "deliveredAt",
+          "sealedToKeyVersion"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "agent",
+              "workspace"
+            ]
+          },
+          "workspaceId": {
+            "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+          },
+          "membershipId": {
+            "$ref": "../shared/common.schema.json#/$defs/workspaceMembershipId"
+          },
+          "tokenLast4": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9]{4}$"
+          },
+          "deliveredAt": {
+            "$ref": "../shared/common.schema.json#/$defs/isoDate"
+          },
+          "sealedToKeyVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "ackedAt": {
+            "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "What Dispatch delivered to the sidecar (metadata only). On rotation, the new token is sealed to the sidecar; the old one stays valid for the grace chosen."
+    },
+    "pull": {
+      "type": "object",
+      "required": [
+        "messages",
+        "webhooks"
+      ],
+      "properties": {
+        "messages": {
+          "type": "object",
+          "description": "The agent's inbox via the sidecar (consumer group per agent inbox; cursor is informational, Redis PEL is authoritative).",
+          "required": [
+            "enabled"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "workspaceId",
+                    "streamEntryId",
+                    "ackedAt"
+                  ],
+                  "properties": {
+                    "workspaceId": {
+                      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+                    },
+                    "streamEntryId": {
+                      "type": "string",
+                      "pattern": "^[0-9]+-[0-9]+$"
+                    },
+                    "ackedAt": {
+                      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "webhooks": {
+          "type": "object",
+          "description": "Fire-webhook deliveries with delivery.mode sidecar_pull and this sidecarId.",
+          "required": [
+            "enabled"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "allowedTargets": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "host[:port] or CIDR the sidecar may POST to."
+              }
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "streamEntryId",
+                    "ackedAt"
+                  ],
+                  "properties": {
+                    "streamEntryId": {
+                      "type": "string",
+                      "pattern": "^[0-9]+-[0-9]+$"
+                    },
+                    "ackedAt": {
+                      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "install": {
+      "$ref": "../shared/common.schema.json#/$defs/installInfo"
+    },
+    "health": {
+      "$ref": "../shared/common.schema.json#/$defs/componentHealth"
+    },
+    "cachePolicy": {
+      "$ref": "../shared/common.schema.json#/$defs/cachePolicy"
+    },
+    "createdAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "createdBy": {
+      "$ref": "../shared/common.schema.json#/$defs/principalRef"
+    },
+    "updatedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "revokedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+    },
+    "revokedBy": {
+      "anyOf": [
+        {
+          "$ref": "../shared/common.schema.json#/$defs/principalRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rev": {
+      "$ref": "../shared/common.schema.json#/$defs/rev"
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "_id": "dsc_deployer01",
+      "orgId": "org_acme",
+      "agentId": "ag_deployer",
+      "name": "deployer-ci-01",
+      "status": "active",
+      "enrollment": {
+        "enrollmentTokenId": "enr_dsc01",
+        "enrolledAt": "2026-09-26T09:00:00Z",
+        "tokenCreatedBy": {
+          "kind": "user",
+          "id": "u_dana"
+        },
+        "fromIp": "10.4.0.12",
+        "publicKey": "b3Jk0mZ3pE6tC8fT2dV9yN4sR7uW5hK1jL3bA0gI8c="
+      },
+      "credential": {
+        "current": {
+          "alg": "sha256",
+          "hash": "Ds9cDs9cDs9cDs9cDs9cDs9cDs9cDs9cDs9cDs9cDs9",
+          "pepperVersion": 1,
+          "prefix": "dsp_sc_",
+          "last4": "Ds9c",
+          "issuedAt": "2026-09-26T09:00:00Z",
+          "expiresAt": null
+        },
+        "previous": null,
+        "rotationCount": 0
+      },
+      "local": {
+        "listen": {
+          "transport": "unix",
+          "path": "/run/dispatch/deployer.sock",
+          "mode": "0660",
+          "group": "deployer"
+        },
+        "exposeOnNetwork": false,
+        "localAuth": {
+          "method": "unix_socket"
+        },
+        "protocols": [
+          "http",
+          "sse",
+          "mcp"
+        ]
+      },
+      "heldTokens": [
+        {
+          "kind": "agent",
+          "tokenLast4": "Dp4m",
+          "deliveredAt": "2026-09-26T09:00:01Z",
+          "sealedToKeyVersion": 1,
+          "ackedAt": "2026-09-26T09:00:01Z"
+        },
+        {
+          "kind": "workspace",
+          "workspaceId": "ws_prod",
+          "membershipId": "wm_prod_deployer",
+          "tokenLast4": "De2h",
+          "deliveredAt": "2026-09-26T09:00:01Z",
+          "sealedToKeyVersion": 1,
+          "ackedAt": "2026-09-26T09:00:02Z"
+        }
+      ],
+      "pull": {
+        "messages": {
+          "enabled": true,
+          "cursor": {
+            "workspaceId": "ws_prod",
+            "streamEntryId": "1727444400000-0",
+            "ackedAt": "2026-09-27T13:40:05Z"
+          }
+        },
+        "webhooks": {
+          "enabled": true,
+          "allowedTargets": [
+            "ci.acme.internal:443"
+          ],
+          "cursor": null
+        }
+      },
+      "install": {
+        "method": "apt",
+        "os": "linux",
+        "arch": "arm64",
+        "host": "ci-runner-3.acme.internal",
+        "serviceManager": "systemd",
+        "version": "0.3.0"
+      },
+      "health": {
+        "status": "healthy",
+        "lastSeenAt": "2026-09-27T13:59:55Z",
+        "missedHeartbeats": 0
+      },
+      "cachePolicy": {
+        "mode": "disk",
+        "keyProtection": "tpm",
+        "defaultTtlSeconds": 300,
+        "pinnedTtlSeconds": 86400,
+        "staleIfErrorSeconds": 900,
+        "maxStalenessSeconds": 86400,
+        "negativeCaching": false,
+        "maxEntries": 64
+      },
+      "createdAt": "2026-09-26T09:00:00Z",
+      "createdBy": {
+        "kind": "user",
+        "id": "u_dana"
+      },
+      "updatedAt": "2026-09-27T13:59:55Z",
+      "rev": 2
+    }
+  ]
+}

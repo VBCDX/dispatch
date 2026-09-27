@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/membership_access.schema.json",
+  "title": "Membership access (Dispatch extension)",
+  "description": "dispatch.membership_access — Dispatch's settings layered on a shared workspace membership (_id = membershipId): read/write, the agent's per-membership workspace token, and agent workspace admin (Dispatch only; never replaces the human admin). Created and deleted with the shared membership (same transaction when colocated, else by the projector).",
+  "type": "object",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "read": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "write": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "member": {
+            "properties": {
+              "kind": {
+                "const": "user"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "read": {
+            "const": true
+          }
+        },
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "token"
+              ]
+            },
+            {
+              "required": [
+                "agentRole"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "member": {
+            "properties": {
+              "kind": {
+                "const": "agent"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "token",
+          "agentRole",
+          "tokenDelivery"
+        ]
+      }
+    }
+  ],
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "member",
+    "read",
+    "write",
+    "updatedAt",
+    "rev"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceMembershipId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "member": {
+      "$ref": "../shared/common.schema.json#/$defs/memberRef"
+    },
+    "read": {
+      "type": "boolean",
+      "description": "Humans always read."
+    },
+    "write": {
+      "type": "boolean"
+    },
+    "agentRole": {
+      "enum": [
+        "member",
+        "workspace_admin"
+      ],
+      "description": "Agents only. Delegated by a human or another admin."
+    },
+    "delegatedBy": {
+      "$ref": "../shared/common.schema.json#/$defs/principalRef"
+    },
+    "token": {
+      "$ref": "../shared/common.schema.json#/$defs/credentialSet",
+      "description": "Agents only: dsp_ws_…"
+    },
+    "tokenRevokedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+    },
+    "tokenDelivery": {
+      "enum": [
+        "shown_once",
+        "sidecar"
+      ],
+      "description": "sidecar: sealed to the agent's Dispatch sidecar and never shown."
+    },
+    "sidecarId": {
+      "$ref": "../shared/common.schema.json#/$defs/dispatchSidecarId"
+    },
+    "updatedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "updatedBy": {
+      "$ref": "../shared/common.schema.json#/$defs/actorRef"
+    },
+    "rev": {
+      "$ref": "../shared/common.schema.json#/$defs/rev"
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "_id": "wm_prod_planner",
+      "orgId": "org_acme",
+      "workspaceId": "ws_prod",
+      "member": {
+        "kind": "agent",
+        "id": "ag_planner"
+      },
+      "read": true,
+      "write": true,
+      "agentRole": "workspace_admin",
+      "delegatedBy": {
+        "kind": "user",
+        "id": "u_dana"
+      },
+      "token": {
+        "current": {
+          "alg": "sha256",
+          "hash": "Pl9aPl9aPl9aPl9aPl9aPl9aPl9aPl9aPl9aPl9aPl9",
+          "pepperVersion": 1,
+          "prefix": "dsp_ws_",
+          "last4": "Pl9a",
+          "issuedAt": "2026-08-28T12:00:00Z",
+          "expiresAt": null
+        },
+        "previous": null,
+        "rotationCount": 0
+      },
+      "tokenDelivery": "shown_once",
+      "updatedAt": "2026-09-01T12:00:00Z",
+      "updatedBy": {
+        "kind": "user",
+        "id": "u_dana",
+        "label": "Dana Keller"
+      },
+      "rev": 1
+    }
+  ]
+}

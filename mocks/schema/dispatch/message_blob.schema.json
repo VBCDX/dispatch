@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/message_blob.schema.json",
+  "title": "Message blob",
+  "description": "dispatch.message_blobs — large message bodies and payloads (> 64 KiB), gzip-compressed. Over 15 MiB compressed goes to GridFS bucket `message_blobs_fs` and `gridFsId` is set instead of `data`. Deleted with the message.",
+  "type": "object",
+  "oneOf": [
+    {
+      "required": [
+        "data"
+      ]
+    },
+    {
+      "required": [
+        "gridFsId"
+      ]
+    }
+  ],
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "messageId",
+    "part",
+    "contentType",
+    "encoding",
+    "bytes",
+    "sha256",
+    "createdAt",
+    "deleteAt"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/blobId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "messageId": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId"
+    },
+    "part": {
+      "enum": [
+        "body",
+        "payload"
+      ]
+    },
+    "contentType": {
+      "enum": [
+        "text/plain; charset=utf-8",
+        "application/json"
+      ]
+    },
+    "encoding": {
+      "enum": [
+        "gzip",
+        "identity"
+      ]
+    },
+    "bytes": {
+      "type": "integer",
+      "description": "Uncompressed size.",
+      "minimum": 0
+    },
+    "storedBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sha256": {
+      "type": "string",
+      "description": "Of the uncompressed content.",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "data": {
+      "type": "string",
+      "description": "BSON binary in Mongo; base64 in JSON.",
+      "contentEncoding": "base64"
+    },
+    "gridFsId": {
+      "type": "string"
+    },
+    "createdAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "deleteAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    }
+  },
+  "additionalProperties": false
+}

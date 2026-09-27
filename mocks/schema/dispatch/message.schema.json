@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/message.schema.json",
+  "title": "Message",
+  "description": "dispatch.messages — the system of record for messages (search, history, threads). Live delivery goes through Redis Streams (redis.md); this row is written first, then the stream entry. Deleted at deleteAt (workspace retention).",
+  "type": "object",
+  "$defs": {
+    "audience": {
+      "description": "Who a message is addressed to: all agents, only some, or all except some. IDs must be agents in the workspace.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "const": "all"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "agentIds"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "only",
+                "except"
+              ]
+            },
+            "agentIds": {
+              "type": "array",
+              "items": {
+                "$ref": "../shared/common.schema.json#/$defs/agentId"
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "author": {
+      "description": "A member (user or agent), or an outside system calling the message's listener. `human`/`webhook` in the public API map to `user`/`listener` here.",
+      "oneOf": [
+        {
+          "$ref": "../shared/common.schema.json#/$defs/memberRef"
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "id",
+            "from"
+          ],
+          "properties": {
+            "kind": {
+              "const": "listener"
+            },
+            "id": {
+              "$ref": "../shared/common.schema.json#/$defs/listenerId"
+            },
+            "from": {
+              "$ref": "../shared/common.schema.json#/$defs/ipAddress"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "content": {
+      "description": "Inline up to 65536 bytes (UTF-8); larger goes to message_blobs and only a preview stays inline.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "storage",
+            "text"
+          ],
+          "properties": {
+            "storage": {
+              "const": "inline"
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 65536
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "storage",
+            "blobId",
+            "bytes",
+            "preview"
+          ],
+          "properties": {
+            "storage": {
+              "const": "blob"
+            },
+            "blobId": {
+              "$ref": "../shared/common.schema.json#/$defs/blobId"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 65537
+            },
+            "preview": {
+              "type": "string",
+              "maxLength": 2048
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "receiptCounts": {
+      "type": "object",
+      "description": "Snapshot of receipt states, flushed from Redis dsp:rc:{msgId}. Receipts are the source of truth.",
+      "properties": {
+        "targets": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "held": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "delivered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "read": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acked": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "filtered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "neverDelivered": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "author",
+    "body",
+    "tags",
+    "audience",
+    "createdAt",
+    "expiresAt",
+    "trk",
+    "deleteAt"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "author": {
+      "$ref": "#/$defs/author"
+    },
+    "body": {
+      "$ref": "#/$defs/content"
+    },
+    "payload": {
+      "description": "Optional JSON payload passed through to agents. Inline JSON up to 64 KiB, else a blob.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "storage",
+            "json"
+          ],
+          "properties": {
+            "storage": {
+              "const": "inline"
+            },
+            "json": {}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "storage",
+            "blobId",
+            "bytes"
+          ],
+          "properties": {
+            "storage": {
+              "const": "blob"
+            },
+            "blobId": {
+              "$ref": "../shared/common.schema.json#/$defs/blobId"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 65537
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+      },
+      "description": "Tags only filter; every member sees every tag.",
+      "maxItems": 20,
+      "uniqueItems": true
+    },
+    "audience": {
+      "$ref": "#/$defs/audience"
+    },
+    "parentId": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId"
+    },
+    "threadRootId": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId",
+      "description": "Root of the thread; equals _id for a root message."
+    },
+    "createdAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "expiresAt": {
+      "$ref": "../shared/common.schema.json#/$defs/nullableDate",
+      "description": "null: never. Default from workspace_settings.defaultExpiryHours."
+    },
+    "expiredEarly": {
+      "type": "object",
+      "description": "A workspace admin expired it now.",
+      "required": [
+        "at",
+        "by"
+      ],
+      "properties": {
+        "at": {
+          "$ref": "../shared/common.schema.json#/$defs/isoDate"
+        },
+        "by": {
+          "$ref": "../shared/common.schema.json#/$defs/actorRef"
+        }
+      },
+      "additionalProperties": false
+    },
+    "trk": {
+      "$ref": "../shared/common.schema.json#/$defs/trackingCode"
+    },
+    "sentVia": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "channel",
+            "userId"
+          ],
+          "properties": {
+            "channel": {
+              "const": "api_console"
+            },
+            "userId": {
+              "$ref": "../shared/common.schema.json#/$defs/userId"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "channel",
+            "sidecarId"
+          ],
+          "properties": {
+            "channel": {
+              "const": "sidecar"
+            },
+            "sidecarId": {
+              "$ref": "../shared/common.schema.json#/$defs/dispatchSidecarId"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "webhookId": {
+      "$ref": "../shared/common.schema.json#/$defs/webhookId"
+    },
+    "streamEntryId": {
+      "type": "string",
+      "description": "Redis stream entry id in dsp:{ws}:msgs, e.g. 1727445600000-0.",
+      "pattern": "^[0-9]+-[0-9]+$"
+    },
+    "receiptCounts": {
+      "$ref": "#/$defs/receiptCounts"
+    },
+    "deleteAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate",
+      "description": "TTL: createdAt + workspace retentionDays (or later expiry)."
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "_id": "msg_06",
+      "orgId": "org_acme",
+      "workspaceId": "ws_prod",
+      "author": {
+        "kind": "agent",
+        "id": "ag_builder"
+      },
+      "body": {
+        "storage": "inline",
+        "text": "Waiting on the external build farm for the signed macOS artifact. It will post here when done — listener is open until this message expires."
+      },
+      "tags": [
+        "release-4.2"
+      ],
+      "audience": {
+        "mode": "all"
+      },
+      "threadRootId": "msg_06",
+      "createdAt": "2026-09-27T13:40:00Z",
+      "expiresAt": "2026-09-28T13:40:00Z",
+      "trk": "trk_ls0006a0",
+      "webhookId": "wh_06",
+      "streamEntryId": "1727444400000-0",
+      "receiptCounts": {
+        "targets": 6,
+        "delivered": 5,
+        "read": 3,
+        "acked": 1,
+        "held": 0,
+        "filtered": 1,
+        "queued": 0,
+        "neverDelivered": 0
+      },
+      "deleteAt": "2026-12-26T13:40:00Z"
+    },
+    {
+      "_id": "msg_07",
+      "orgId": "org_acme",
+      "workspaceId": "ws_prod",
+      "author": {
+        "kind": "listener",
+        "id": "lsn_8Kq2vT",
+        "from": "198.51.100.7"
+      },
+      "body": {
+        "storage": "inline",
+        "text": "Signed and notarized."
+      },
+      "payload": {
+        "storage": "inline",
+        "json": {
+          "artifact": "Acme-4.2.0-rc1.dmg",
+          "signed": true,
+          "notarized": true
+        }
+      },
+      "tags": [],
+      "audience": {
+        "mode": "all"
+      },
+      "parentId": "msg_06",
+      "threadRootId": "msg_06",
+      "createdAt": "2026-09-27T13:51:00Z",
+      "expiresAt": null,
+      "trk": "trk_ls0006c2",
+      "deleteAt": "2026-12-26T13:51:00Z"
+    }
+  ]
+}

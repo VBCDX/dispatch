@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/audit_detail.schema.json",
+  "title": "Dispatch audit detail",
+  "description": "The `detail` blob on dispatch.audit_events rows (shared: false). IDs and metadata; never message bodies or passwords.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "messageId"
+      ],
+      "properties": {
+        "kind": {
+          "const": "message"
+        },
+        "messageId": {
+          "$ref": "../shared/common.schema.json#/$defs/messageId"
+        },
+        "audience": {
+          "$ref": "message.schema.json#/$defs/audience"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "messageId",
+        "agentId",
+        "state"
+      ],
+      "properties": {
+        "kind": {
+          "const": "receipt"
+        },
+        "messageId": {
+          "$ref": "../shared/common.schema.json#/$defs/messageId"
+        },
+        "agentId": {
+          "$ref": "../shared/common.schema.json#/$defs/agentId"
+        },
+        "state": {
+          "type": "string"
+        },
+        "rule": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "webhookId",
+        "attempt"
+      ],
+      "properties": {
+        "kind": {
+          "const": "webhook"
+        },
+        "webhookId": {
+          "$ref": "../shared/common.schema.json#/$defs/webhookId"
+        },
+        "trigger": {
+          "type": "string"
+        },
+        "auth": {
+          "type": "string",
+          "description": "\"Basic · <user>\" or \"None\""
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "type": "integer"
+        },
+        "fromIp": {
+          "$ref": "../shared/common.schema.json#/$defs/ipAddress"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "steps"
+      ],
+      "properties": {
+        "kind": {
+          "const": "access"
+        },
+        "op": {
+          "enum": [
+            "read",
+            "write",
+            "admin"
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "rule",
+              "pass"
+            ],
+            "properties": {
+              "rule": {
+                "type": "string"
+              },
+              "pass": {
+                "type": "boolean"
+              },
+              "detail": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "noteId",
+        "version"
+      ],
+      "properties": {
+        "kind": {
+          "const": "context"
+        },
+        "noteId": {
+          "$ref": "../shared/common.schema.json#/$defs/noteId"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "changes"
+      ],
+      "properties": {
+        "kind": {
+          "const": "admin"
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "field",
+              "before",
+              "after"
+            ],
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "before": {},
+              "after": {}
+            },
+            "additionalProperties": false
+          }
+        },
+        "impact": {
+          "type": "object",
+          "properties": {
+            "filteredReceipts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "deliveredKept": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokensRevoked": {
+              "type": "array",
+              "items": {
+                "$ref": "../shared/common.schema.json#/$defs/workspaceMembershipId"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

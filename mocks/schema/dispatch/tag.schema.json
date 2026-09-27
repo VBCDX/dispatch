@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/tag.schema.json",
+  "title": "Tag",
+  "description": "dispatch.tags — per-workspace tag index for autocomplete and filters (_id = `<workspaceId>:<tag>`).",
+  "type": "object",
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "tag",
+    "messageCount",
+    "lastUsedAt"
+  ],
+  "properties": {
+    "_id": {
+      "type": "string",
+      "pattern": "^ws_[A-Za-z0-9_]+:[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "tag": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "messageCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "lastUsedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    }
+  },
+  "additionalProperties": false
+}

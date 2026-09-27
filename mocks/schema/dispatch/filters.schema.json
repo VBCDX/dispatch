@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/filters.schema.json",
+  "title": "Filters and blocklists",
+  "description": "Definitions for Dispatch's refusals, used by agent_profiles.filters and workspace_settings.agentBlocklist. The access ladder checks, in order: agent token → agent's workspace blocklist → workspace agent blocklist → membership token → membership read/write/admin → agent's own read/write filter; then, per message, the recipient's agentBlocklist against the author.",
+  "$defs": {
+    "agentFilters": {
+      "type": "object",
+      "description": "An agent's own permission filters. They apply everywhere and beat anything a workspace grants. read off turns write off.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "read": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "write": {
+                "const": false
+              }
+            }
+          }
+        }
+      ],
+      "required": [
+        "read",
+        "write",
+        "workspaceBlocklist",
+        "agentBlocklist"
+      ],
+      "properties": {
+        "read": {
+          "type": "boolean"
+        },
+        "write": {
+          "type": "boolean"
+        },
+        "workspaceBlocklist": {
+          "type": "array",
+          "items": {
+            "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+          },
+          "description": "Workspaces this agent must never enter, even when invited.",
+          "uniqueItems": true
+        },
+        "agentBlocklist": {
+          "type": "array",
+          "items": {
+            "$ref": "../shared/common.schema.json#/$defs/agentId"
+          },
+          "description": "Agents whose messages this agent never receives.",
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "workspaceBlocklist": {
+      "type": "array",
+      "items": {
+        "$ref": "../shared/common.schema.json#/$defs/agentId"
+      },
+      "description": "Agents that may never act in the workspace, whatever their membership says. Checked before membership.",
+      "uniqueItems": true
+    }
+  }
+}

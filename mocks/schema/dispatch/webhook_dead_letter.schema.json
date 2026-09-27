@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/webhook_dead_letter.schema.json",
+  "title": "Webhook dead letter",
+  "description": "dispatch.webhook_dead_letters — a fire webhook that ended without delivery after retries (gave_up), plus the full attempt list. An admin can replay (one extra attempt) until the message expires.",
+  "type": "object",
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "webhookId",
+    "messageId",
+    "url",
+    "trigger",
+    "attempts",
+    "reason",
+    "deadAt",
+    "deleteAt"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/deadLetterId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "webhookId": {
+      "$ref": "../shared/common.schema.json#/$defs/webhookId"
+    },
+    "messageId": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId"
+    },
+    "url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "trigger": {
+      "enum": [
+        "send",
+        "all-read",
+        "all-ack"
+      ]
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "$ref": "webhook.schema.json#/$defs/attempt"
+      },
+      "minItems": 1
+    },
+    "reason": {
+      "enum": [
+        "gave_up",
+        "sidecar_unavailable"
+      ]
+    },
+    "deadAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "replays": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "at",
+          "by",
+          "status"
+        ],
+        "properties": {
+          "at": {
+            "$ref": "../shared/common.schema.json#/$defs/isoDate"
+          },
+          "by": {
+            "$ref": "../shared/common.schema.json#/$defs/actorRef"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "deleteAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate",
+      "description": "TTL: 30 days."
+    }
+  },
+  "additionalProperties": false
+}

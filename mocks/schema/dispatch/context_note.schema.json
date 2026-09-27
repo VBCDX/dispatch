@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/context_note.schema.json",
+  "title": "Context note",
+  "description": "dispatch.context_notes — versioned shared context pinned to a workspace. Every write bumps version and appends a context_note_versions row.",
+  "type": "object",
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "title",
+    "body",
+    "tags",
+    "version",
+    "updatedAt",
+    "updatedBy",
+    "createdAt",
+    "createdBy"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/noteId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 262144
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "createdAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "createdBy": {
+      "$ref": "../shared/common.schema.json#/$defs/actorRef"
+    },
+    "updatedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "updatedBy": {
+      "$ref": "../shared/common.schema.json#/$defs/actorRef"
+    },
+    "deletedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+    }
+  },
+  "additionalProperties": false
+}
