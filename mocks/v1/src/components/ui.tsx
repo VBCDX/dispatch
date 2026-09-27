@@ -508,7 +508,7 @@ export type MenuItem = { label: string; onClick: () => void; danger?: boolean; d
  * A ⋯ menu. Unavailable items stay in the list, in their place, marked aria-disabled with the reason — they can be
  * reached with the arrow keys and read, but not chosen. 'separator' divides shared items from app-specific ones.
  */
-export function Menu({ items, label = 'Actions' }: { items: (MenuItem | 'separator' | null)[]; label?: string }) {
+export function Menu({ items, label = 'Actions', disabledReason }: { items: (MenuItem | 'separator' | null)[]; label?: string; disabledReason?: string }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const btn = useRef<HTMLButtonElement>(null)
@@ -540,6 +540,18 @@ export function Menu({ items, label = 'Actions' }: { items: (MenuItem | 'separat
   const shown = items
     .filter((x): x is MenuItem | 'separator' => !!x)
     .filter((x, i, arr) => x !== 'separator' || (i > 0 && i < arr.length - 1 && arr[i - 1] !== 'separator' && arr.slice(i + 1).some((y) => y !== 'separator')))
+  // The whole menu can be unavailable: the button stays focusable, aria-disabled, and says why.
+  if (disabledReason)
+    return (
+      <span className="relative inline-block" onClick={(e) => e.stopPropagation()}>
+        <button type="button" aria-label={label} aria-disabled="true" aria-describedby={`${id}-why`} title={disabledReason} className="cursor-default rounded-md px-2 py-0.5 text-zinc-700">
+          ⋯
+        </button>
+        <span id={`${id}-why`} className="sr-only">
+          {disabledReason}
+        </span>
+      </span>
+    )
   return (
     <div ref={ref} className="relative inline-block" onClick={(e) => e.stopPropagation()}>
       <button ref={btn} type="button" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)} className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-line hover:text-zinc-200">

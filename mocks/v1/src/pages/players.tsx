@@ -2,13 +2,13 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, maskAgentToken } from '../lib/format'
-import { actions, agentById, clientLabel, coupleReadWrite, humanById, isOrgAdmin, labelTaken, membershipsOf, org, orgAgents, ORG_ADMIN_ROLES, receiptState, useDB, useNow, visibleEvents, workspaceRole, wsById } from '../lib/store'
+import { actions, agentById, lastActiveIn, clientLabel, coupleReadWrite, humanById, isOrgAdmin, labelTaken, membershipsOf, org, orgAgents, ORG_ADMIN_ROLES, receiptState, useDB, useNow, visibleEvents, workspaceRole, wsById } from '../lib/store'
 import type { AgentFilters } from '../lib/types'
-import { AgentsGrid, AgentStatus, InviteUserModal, PersonStatus, UsersGrid } from './grids'
+import { AgentLastUsed, AgentsGrid, AgentStatus, InviteUserModal, PersonStatus, UsersGrid } from './grids'
 import { useAgentActions, useUserActions } from './playerActions'
 import { CopyChip } from '../components/credential'
 import { showSecret } from '../lib/secrets'
-import { accessImpactRows, AgentGlyph, AuditLog, ImpactDialog, NoAccess, useRecordOrg } from '../components/shared'
+import { accessImpactRows, AgentGlyph, AuditLog, ImpactDialog, NoAccess, NotFound, useRecordOrg } from '../components/shared'
 import { Breadcrumb, Button, Card, Field, Footer, Input, Menu, Modal, PageTitle, Pill, Row, Table, Textarea, Toggle, cx } from '../components/ui'
 
 /* ------------------------------------------------------------------ */
@@ -91,7 +91,8 @@ export function AgentDetail() {
   const [f, setF] = useState<AgentFilters | null>(a?.filters ?? null)
   useEffect(() => setF(a?.filters ?? null), [a?.id]) // eslint-disable-line
   if (access === 'switching') return null
-  if (!a || !f || access === 'denied') return <NoAccess what="agent" back={{ to: '/players/agents', label: 'Back to agents' }} />
+  if (!a) return <NotFound what="agent" id={agentId} back={{ to: '/players/agents', label: 'Back to agents' }} />
+  if (!f || access === 'denied') return <NoAccess what="agent" back={{ to: '/players/agents', label: 'Back to agents' }} />
   const admin = isOrgAdmin(d)
   // Only the agent's own organization, whichever org is on screen.
   const memberships = d.workspaces.filter((w) => w.orgId === a.orgId && w.members.some((m) => m.kind === 'agent' && m.id === a.id))
@@ -108,7 +109,7 @@ export function AgentDetail() {
     <div className="max-w-[1120px]">
       <Breadcrumb items={[{ label: 'Players' }, { label: 'Agents', to: '/players/agents' }, { label: a.label }]} />
       <PageTitle
-        sub={<AgentStatus a={a} />}
+        sub={<span className="flex items-center gap-3"><AgentStatus a={a} /><AgentLastUsed a={a} /></span>}
         actions={
           <>
             {admin && a.status === 'active' && <Button onClick={() => simulate(a)}>{a.connected ? 'Simulate disconnect' : 'Simulate connect'}</Button>}
@@ -333,8 +334,8 @@ export function UserDetail() {
           {role}
           {ORG_ADMIN_ROLES.includes(role) && <span className="text-xs text-zinc-500"> — administers every workspace in {org(d)?.name}</span>}
         </span>
-        <span className="text-zinc-500">Last active</span>
-        <span>{h.id === d.currentUserId ? 'Now' : ago(h.lastActive, now)}</span>
+        <span className="text-zinc-500">Last active (this org)</span>
+        <span>{h.id === d.currentUserId ? 'Now' : lastActiveIn(d, h.id) ? ago(lastActiveIn(d, h.id), now) : '—'}</span>
         <span className="text-zinc-500">Agents they registered</span>
         <span>{registered.map((a) => a.label).join(', ') || 'None'} {registered.length > 0 && <span className="text-xs text-zinc-500">(audit only — agents belong to the organization)</span>}</span>
       </Card>

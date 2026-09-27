@@ -289,7 +289,7 @@ export function ChangeOrgRoleModal({ h, onClose }: { h: Human | null; onClose: (
 function ChangeOrgRole({ h, onClose }: { h: Human; onClose: () => void }) {
   const d = useDB()
   const cur = h.roles[d.currentOrgId]
-  const [role, setRole] = useState<'user' | 'userAdmin'>(cur === 'userAdmin' ? 'userAdmin' : 'user')
+  const [role, setRole] = useState<'user' | 'userAdmin'>(cur === 'user' ? 'user' : 'userAdmin')
   if (!cur) return null
   const f = humanFootprint(d, h)
   const others = orgAdmins(d).filter((x) => x.id !== h.id)
@@ -394,3 +394,57 @@ export function PersonConfirm({ acting, onClose }: { acting: PersonAction | null
   return <ImpactDialog open onClose={onClose} title={spec.title} rows={spec.rows} body={spec.body} confirmLabel={spec.confirm} confirmVariant={spec.tone} onConfirm={spec.run} />
 }
 
+
+/**
+ * Change workspace role…: Member or Workspace admin, previewed. The same dialog for people and (in Dispatch) agents;
+ * losing the last named human workspace admin hands the workspace to the org admins by default (rule 2).
+ */
+export function ChangeWorkspaceRoleModal({ target, onClose }: { target: { m: Membership; w: Workspace } | null; onClose: () => void }) {
+  return target ? <ChangeWorkspaceRole key={`${target.w.id}:${target.m.kind}:${target.m.id}`} m={target.m} w={target.w} onClose={onClose} /> : null
+}
+function ChangeWorkspaceRole({ m, w, onClose }: { m: Membership; w: Workspace; onClose: () => void }) {
+  const d = useDB()
+  const [role, setRole] = useState<MemberRole>(m.role)
+  const p: Principal = { kind: m.kind, id: m.id }
+  const name = principalName(d, p)
+  const changed = role !== m.role
+  const losesLastHuman = changed && role === 'member' && m.kind === 'human' && explicitHumanAdmins(d, w).every((x) => x.id === m.id) && explicitHumanAdmins(d, w).length > 0
+  const defaults = orgAdmins(d, w.orgId).map((h) => h.name)
+  const rows: Rows = [
+    ['Workspace role', changed ? `${roleName(m.role)} → ${roleName(role)}` : `${roleName(m.role)} (unchanged)`, changed ? 'amber' : undefined],
+    ...(role === 'admin' && changed ? ([['Can then', 'Add and remove members and change their workspace role' + (m.kind === 'agent' ? ' — over the REST API and MCP, audited as agent actions' : ''), 'amber']] as Rows) : []),
+    ...(losesLastHuman ? ([['Default admins take over', `${and(defaults)} (org admins)`, 'amber']] as Rows) : []),
+    ['Admin rights they delegated', 'Stand — nothing cascades'],
+  ]
+  return (
+    <Modal open onClose={onClose} width={500} title={`Change ${name}’s role in ${w.name}`}>
+      <Segmented
+        label="Workspace role"
+        value={role}
+        onChange={setRole}
+        options={[
+          { value: 'member', label: 'Member' },
+          { value: 'admin', label: 'Workspace admin' },
+        ]}
+      />
+      <ImpactRows rows={rows} />
+      {m.kind === 'agent' && <div className="text-xs text-zinc-500">Agents as workspace admins are a Dispatch capability; it never replaces the human admin.</div>}
+      <Footer>
+        <Button size="lg" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          size="lg"
+          variant={role === 'member' ? 'danger' : 'primary'}
+          disabled={!changed}
+          onClick={() => {
+            actions.setMember(w.id, p, { role })
+            onClose()
+          }}
+        >
+          Change role
+        </Button>
+      </Footer>
+    </Modal>
+  )
+}

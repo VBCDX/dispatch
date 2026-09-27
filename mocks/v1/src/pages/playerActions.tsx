@@ -6,32 +6,46 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ago, maskAgentToken } from '../lib/format'
 import { actions, canAdmin, isActive, isLastOwner, isOnline, isOrgAdmin, membershipsOf, myOrgRole, ORG_ADMIN_ROLES, statusIn, useDB, useNow } from '../lib/store'
-import type { Agent, Human, Principal, Workspace } from '../lib/types'
+import type { Agent, Human, Membership, Principal, Workspace } from '../lib/types'
 import { accessImpactRows, ImpactDialog } from '../components/shared'
 import { showAgentToken } from '../components/tokens'
 import { Button, Footer, Modal, Segmented, type MenuItem } from '../components/ui'
-import { AssignWorkspacesModal, ChangeOrgRoleModal, MemberConfirm, PersonConfirm, type MemberPending, type PersonAction } from './playerDialogs'
+import { AssignWorkspacesModal, ChangeOrgRoleModal, ChangeWorkspaceRoleModal, MemberConfirm, PersonConfirm, type MemberPending, type PersonAction } from './playerDialogs'
 
-function workspaceItems(d: ReturnType<typeof useDB>, w: Workspace, p: Principal, open: (x: MemberPending) => void): MenuItem[] {
+/**
+ * Workspace › Members row menu (the same in Keyhole): Change workspace role…, Remove from workspace…, then a
+ * separator and Dispatch's own items. Org-admin rows get no menu — org admins administer every workspace.
+ */
+function workspaceItems(d: ReturnType<typeof useDB>, w: Workspace, p: Principal, open: (x: MemberPending) => void, changeRole: (x: { m: Membership; w: Workspace }) => void): (MenuItem | 'separator')[] {
   const m = w.members.find((x) => x.kind === p.kind && x.id === p.id)
-  const may = canAdmin(d, w)
-  const why = !may ? 'Workspace admins only' : !m ? 'Admin through their org role — not a member here' : undefined
-  const off = !may || !m
+  const why = !canAdmin(d, w) ? 'Workspace admins only' : !m ? 'Not a member of this workspace' : undefined
+  const off = !!why
   return [
-    m?.role === 'admin' ? { label: 'Remove workspace admin…', disabled: off, hint: why, onClick: () => m && open({ kind: 'demote', m, w }) } : { label: 'Make workspace admin…', disabled: off, hint: why, onClick: () => m && open({ kind: 'delegate', m, w }) },
+    { label: 'Change workspace role…', disabled: off, hint: why, onClick: () => m && changeRole({ m, w }) },
+    { label: 'Remove from workspace…', danger: true, disabled: off, hint: why, onClick: () => m && open({ kind: 'remove', m, w }) },
+    'separator',
     ...(p.kind === 'agent' ? [{ label: 'Rotate workspace token…', disabled: off, hint: why, onClick: () => m && open({ kind: 'rotate', m, w }) }] : []),
-    { label: `Remove from ${w.name}…`, danger: true, disabled: off, hint: why, onClick: () => m && open({ kind: 'remove', m, w }) },
   ]
 }
 
+/** The suite's shared disabled reasons (same text in Keyhole). */
+export const REASONS = {
+  orgAdmins: 'Org admins only',
+  owners: 'Owners only',
+  self: 'Not for yourself',
+  ownersManageOwners: 'Only Owners manage Owners',
+  lastOwner: 'Last active Owner — transfer ownership first',
+  orgAdminWorkspaces: 'Org admins administer every workspace',
+  inactive: 'Not active in this organization',
+  revoked: 'Revoked — create a new agent instead',
+} as const
 
 /** Why the current person can't act on this person's org membership, or null when they can. */
-function blockedOn(d: ReturnType<typeof useDB>, h: Human, action: 'role' | 'suspend' | 'remove'): string | null {
-  if (!isOrgAdmin(d)) return 'Org admins only'
-  if (h.id === d.currentUserId) return 'Not for yourself'
-  if (h.roles[d.currentOrgId] === 'Owner' && myOrgRole(d) !== 'Owner') return 'Only an Owner can act on an Owner'
-  if (action === 'role' && h.roles[d.currentOrgId] === 'Owner') return 'An Owner’s role changes only by transferring ownership'
-  if (action !== 'role' && isLastOwner(d, h)) return 'The last active Owner — transfer ownership first'
+function blockedOn(d: ReturnType<typeof useDB>, h: Human): string | null {
+  if (!isOrgAdmin(d)) return REASONS.orgAdmins
+  if (h.roles[d.currentOrgId] === 'Owner' && myOrgRole(d) !== 'Owner') return REASONS.ownersManageOwners
+  if (isLastOwner(d, h)) return REASONS.lastOwner
+  if (h.id === d.currentUserId) return REASONS.self
   return null
 }
 
@@ -41,19 +55,28 @@ export function useUserActions(ws?: Workspace) {
   const [roleFor, setRoleFor] = useState<Human | null>(null)
   const [assignFor, setAssignFor] = useState<Principal | null>(null)
   const [pending, setPending] = useState<MemberPending | null>(null)
+  const [invite, setInvite] = useState<Human | null>(null)
+  const [wsRole, setWsRole] = useState<{ m: Membership; w: Workspace } | null>(null)
   const menuFor = (h: Human): (MenuItem | 'separator')[] => {
-    const suspended = statusIn(h, d.currentOrgId) === 'suspended'
-    const transferWhy = !isOrgAdmin(d) || myOrgRole(d) !== 'Owner' ? 'Owners only' : h.id === d.currentUserId ? 'That’s you' : h.roles[d.currentOrgId] === 'Owner' ? 'Already an Owner' : !isActive(h, d.currentOrgId) ? 'Only to an active person' : null
-    const assignWhy = !isOrgAdmin(d) ? 'Org admins only' : ORG_ADMIN_ROLES.includes(h.roles[d.currentOrgId]) ? 'Org admins administer every workspace' : null
+    if (ws) return workspaceItems(d, ws, { kind: 'human', id: h.id }, setPending, setWsRole)
+    const status = statusIn(h, d.currentOrgId)
+    // An invitation has only its own actions, in both apps.
+    if (status === 'invited')
+      return [
+        { label: 'Resend invite', disabled: !isOrgAdmin(d), hint: isOrgAdmin(d) ? undefined : REASONS.orgAdmins, onClick: () => actions.resendInvite(h.id) },
+        { label: 'Revoke invite…', danger: true, disabled: !isOrgAdmin(d), hint: isOrgAdmin(d) ? undefined : REASONS.orgAdmins, onClick: () => setInvite(h) },
+      ]
+    const blocked = blockedOn(d, h)
+    const transferWhy = !isOrgAdmin(d) || myOrgRole(d) !== 'Owner' ? REASONS.owners : h.id === d.currentUserId ? REASONS.self : h.roles[d.currentOrgId] === 'Owner' ? 'Already an Owner' : !isActive(h, d.currentOrgId) ? REASONS.inactive : null
+    const assignWhy = !isOrgAdmin(d) ? REASONS.orgAdmins : ORG_ADMIN_ROLES.includes(h.roles[d.currentOrgId]) ? REASONS.orgAdminWorkspaces : null
     return [
-      { label: 'Change org role…', disabled: !!blockedOn(d, h, 'role'), hint: blockedOn(d, h, 'role') ?? undefined, onClick: () => setRoleFor(h) },
+      { label: 'Change org role…', disabled: !!blocked, hint: blocked ?? undefined, onClick: () => setRoleFor(h) },
       { label: 'Assign workspaces…', disabled: !!assignWhy, hint: assignWhy ?? undefined, onClick: () => setAssignFor({ kind: 'human', id: h.id }) },
       { label: 'Transfer ownership…', disabled: !!transferWhy, hint: transferWhy ?? undefined, onClick: () => setActing({ kind: 'transfer', h }) },
-      suspended
-        ? { label: 'Resume…', disabled: !!blockedOn(d, h, 'suspend'), hint: blockedOn(d, h, 'suspend') ?? undefined, onClick: () => setActing({ kind: 'resume', h }) }
-        : { label: 'Suspend…', disabled: !!blockedOn(d, h, 'suspend'), hint: blockedOn(d, h, 'suspend') ?? undefined, onClick: () => setActing({ kind: 'suspend', h }) },
-      { label: 'Remove from organization…', danger: true, disabled: !!blockedOn(d, h, 'remove'), hint: blockedOn(d, h, 'remove') ?? undefined, onClick: () => setActing({ kind: 'remove', h }) },
-      ...(ws ? (['separator', ...workspaceItems(d, ws, { kind: 'human', id: h.id }, setPending)] as (MenuItem | 'separator')[]) : []),
+      status === 'suspended'
+        ? { label: 'Resume…', disabled: !!blocked, hint: blocked ?? undefined, onClick: () => setActing({ kind: 'resume', h }) }
+        : { label: 'Suspend…', disabled: !!blocked, hint: blocked ?? undefined, onClick: () => setActing({ kind: 'suspend', h }) },
+      { label: 'Remove from organization…', danger: true, disabled: !!blocked, hint: blocked ?? undefined, onClick: () => setActing({ kind: 'remove', h }) },
     ]
   }
   const dialogs = (
@@ -62,6 +85,16 @@ export function useUserActions(ws?: Workspace) {
       <ChangeOrgRoleModal h={roleFor} onClose={() => setRoleFor(null)} />
       <AssignWorkspacesModal p={assignFor} onClose={() => setAssignFor(null)} />
       <MemberConfirm pending={pending} onClose={() => setPending(null)} />
+      <ChangeWorkspaceRoleModal target={wsRole} onClose={() => setWsRole(null)} />
+      <ImpactDialog
+        open={!!invite}
+        onClose={() => setInvite(null)}
+        title={`Revoke the invitation for ${invite?.email}?`}
+        rows={invite ? [['Org role', `${invite.roles[d.currentOrgId]} (invited) → none`, 'amber'], ['Workspaces waiting for them', membershipsOf(d, { kind: 'human', id: invite.id }).map(({ w }) => w.name).join(', ') || 'None']] : []}
+        body="The invitation link stops working. You can invite them again later."
+        confirmLabel="Revoke invite"
+        onConfirm={() => invite && actions.revokeInvite(invite.id)}
+      />
     </>
   )
   return { menuFor, dialogs, setPending }
@@ -83,30 +116,23 @@ export function useAgentActions(ws?: Workspace) {
   const [revoking, setRevoking] = useState<Agent | null>(null)
   const [assignFor, setAssignFor] = useState<Principal | null>(null)
   const [pending, setPending] = useState<MemberPending | null>(null)
+  const [wsRole, setWsRole] = useState<{ m: Membership; w: Workspace } | null>(null)
   // Prototype: an agent that has never connected has reported nothing, so ask which client it connects with.
   const [firstConnect, setFirstConnect] = useState<{ a: Agent; client: SimClient } | null>(null)
   const simulate = (a: Agent) => (a.connected ? actions.connectAgent(a.id, false) : a.client ? actions.connectAgent(a.id, true, a.client) : setFirstConnect({ a, client: (a.configFormat as SimClient) ?? 'Claude Code' }))
   const menuFor = (a: Agent, opts: { detail?: boolean } = {}): (MenuItem | 'separator')[] => {
+    if (ws) return workspaceItems(d, ws, { kind: 'agent', id: a.id }, setPending, setWsRole)
     const admin = isOrgAdmin(d, a.orgId)
-    const why = (x: string | null) => (!admin ? 'Org admins only' : x)
-    const revoked = a.status === 'revoked'
-    const assignWhy = why(revoked ? 'Revoked agents can’t join workspaces' : null)
-    const rotateWhy = why(revoked ? 'Revoked — its token no longer works' : null)
-    const statusWhy = why(revoked ? 'Revoked — can’t be resumed' : null)
-    const revokeWhy = why(revoked ? 'Already revoked' : null)
+    const why = !admin ? REASONS.orgAdmins : a.status === 'revoked' ? REASONS.revoked : null
     return [
-      { label: 'Assign workspaces…', disabled: !!assignWhy, hint: assignWhy ?? undefined, onClick: () => setAssignFor({ kind: 'agent', id: a.id }) },
-      { label: 'Rotate token…', disabled: !!rotateWhy, hint: rotateWhy ?? undefined, onClick: () => setRotating(a) },
-      a.status === 'suspended' ? { label: 'Resume…', disabled: !!statusWhy, hint: statusWhy ?? undefined, onClick: () => setResuming(a) } : { label: 'Suspend…', disabled: !!statusWhy, hint: statusWhy ?? undefined, onClick: () => setSuspending(a) },
-      { label: 'Revoke…', danger: true, disabled: !!revokeWhy, hint: revokeWhy ?? undefined, onClick: () => setRevoking(a) },
+      { label: 'Assign workspaces…', disabled: !!why, hint: why ?? undefined, onClick: () => setAssignFor({ kind: 'agent', id: a.id }) },
+      { label: 'Rotate token…', disabled: !!why, hint: why ?? undefined, onClick: () => setRotating(a) },
+      a.status === 'suspended' ? { label: 'Resume…', disabled: !!why, hint: why ?? undefined, onClick: () => setResuming(a) } : { label: 'Suspend…', disabled: !!why, hint: why ?? undefined, onClick: () => setSuspending(a) },
+      { label: 'Revoke…', danger: true, disabled: !!why, hint: why ?? undefined, onClick: () => setRevoking(a) },
       // Dispatch's own items, after the shared ones.
       'separator',
-      ...(ws
-        ? workspaceItems(d, ws, { kind: 'agent', id: a.id }, setPending)
-        : [
-            ...(opts.detail ? [] : [{ label: 'Edit its own filters…', onClick: () => nav(`/players/agents/${a.id}`) }]),
-            { label: a.connected ? 'Simulate disconnect' : 'Simulate connect', disabled: !admin || a.status !== 'active', hint: !admin ? 'Org admins only' : a.status !== 'active' ? `It’s ${a.status}` : 'Prototype only', onClick: () => simulate(a) },
-          ]),
+      ...(opts.detail ? [] : [{ label: 'Edit its own filters…', onClick: () => nav(`/players/agents/${a.id}`) }]),
+      { label: a.connected ? 'Simulate disconnect' : 'Simulate connect', disabled: !admin || a.status !== 'active', hint: !admin ? REASONS.orgAdmins : a.status !== 'active' ? `It’s ${a.status}` : 'Prototype only', onClick: () => simulate(a) },
     ]
   }
   const mships = (a: Agent) => membershipsOf(d, { kind: 'agent', id: a.id }, a.orgId)
@@ -115,6 +141,7 @@ export function useAgentActions(ws?: Workspace) {
     <>
       <AssignWorkspacesModal p={assignFor} onClose={() => setAssignFor(null)} />
       <MemberConfirm pending={pending} onClose={() => setPending(null)} />
+      <ChangeWorkspaceRoleModal target={wsRole} onClose={() => setWsRole(null)} />
       <ImpactDialog
         open={!!rotating}
         onClose={() => setRotating(null)}

@@ -43,7 +43,7 @@ export function OrgsList() {
                 </div>
                 <div className="text-zinc-400">{u.roles[o.id]}</div>
                 <div className={status === 'active' ? 'text-zinc-400' : 'text-amber-400'}>{status}</div>
-                <div className="text-zinc-400">{open ? d.humans.filter((h) => h.roles[o.id]).length : '—'}</div>
+                <div className="text-zinc-400">{open ? d.humans.filter((h) => h.roles[o.id] && statusIn(h, o.id) !== 'invited').length : '—'}</div>
                 <div className="text-zinc-400">{open ? d.workspaces.filter((w) => w.orgId === o.id).length : '—'}</div>
                 <div className="text-zinc-500">{ago(o.createdAt, now)}</div>
               </Row>
@@ -69,8 +69,8 @@ export function OrgDetail() {
       <Tabs
         tabs={[
           { to: `${base}/overview`, label: 'Overview' },
-          { to: `${base}/members`, label: `Members · ${orgHumans(d).length}` },
-          { to: `${base}/agents`, label: `Agents · ${orgAgents(d).length}` },
+          { to: `${base}/members`, label: 'Members' },
+          { to: `${base}/agents`, label: 'Agents' },
           { to: `${base}/workspaces`, label: 'Workspaces' },
           { to: `${base}/audit`, label: 'Audit' },
         ]}
@@ -86,10 +86,10 @@ export function OrgOverview() {
   const o = org(d)!
   const all = owners(d)
   const counts: [string, string | number, string][] = [
-    ['Members', orgHumans(d).length, 'members'],
+    ['Members', orgHumans(d).filter((h) => statusIn(h, o.id) !== 'invited').length, 'members'],
+    ['Pending invites', orgHumans(d).filter((h) => statusIn(h, o.id) === 'invited').length, 'members'],
     ['Agents', `${orgAgents(d).filter(isOnline).length} online / ${orgAgents(d).filter((a) => a.status !== 'revoked').length}`, 'agents'],
     ['Workspaces', myWorkspaces(d).length, 'workspaces'],
-    ['Suspended people', orgHumans(d).filter((h) => statusIn(h, o.id) === 'suspended').length, 'members'],
   ]
   return (
     <div className="mt-5 max-w-[960px]">

@@ -47,6 +47,30 @@ export function useRecordOrg(orgId: string | undefined): 'ok' | 'switching' | 'd
   return member ? 'switching' : 'denied'
 }
 
+/** A record that doesn't exist — with a hint when the link uses a pre-suite ID (agt_…, wks_…). */
+export function NotFound({ what, id, back }: { what: string; id?: string; back: { to: string; label: string } }) {
+  const legacy = id && /^(agt|wks)_/.test(id) ? id.replace(/^agt_/, 'ag_').replace(/^wks_/, 'ws_') : null
+  return (
+    <div role="alert" className="max-w-[560px] rounded-[10px] border border-edge bg-panel p-6 text-sm2 text-zinc-400">
+      <div className="text-[13px] font-semibold text-zinc-200">
+        No {what} with the ID <span className="font-mono">{id}</span>.
+      </div>
+      <div className="mt-1">
+        {legacy ? (
+          <>
+            This ID format changed: agent IDs now start with <span className="font-mono">ag_</span> and workspace IDs with <span className="font-mono">ws_</span> (they used to be <span className="font-mono">agt_</span> and <span className="font-mono">wks_</span>). Look for <span className="font-mono">{legacy}</span> in the list.
+          </>
+        ) : (
+          'It may have been deleted, or the link is mistyped.'
+        )}
+      </div>
+      <Link to={back.to} className="mt-3 inline-block">
+        {back.label} →
+      </Link>
+    </div>
+  )
+}
+
 export function NoAccess({ what, back }: { what: string; back: { to: string; label: string } }) {
   return (
     <div role="alert" className="max-w-[560px] rounded-[10px] border border-edge bg-panel p-6 text-sm2 text-zinc-400">

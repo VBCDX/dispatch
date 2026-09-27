@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { evaluate, type Op } from '../lib/access'
 import { ago, maskAgentToken, maskWsToken, plural } from '../lib/format'
-import { actions, agentById, canAdmin, isExpired, isOrgAdmin, isOnline, orgAgents, orgHumans, sessionSecret, useDB } from '../lib/store'
+import { actions, agentById, canAdmin, getDB, humanById, isExpired, isOrgAdmin, isOnline, orgAgents, orgHumans, sessionSecret, statusIn, useDB } from '../lib/store'
 import type { AgentClient, Harness, MemberRole } from '../lib/types'
 import { CopyChip, DispatchMark, KeyholeIcon } from '../components/credential'
 import { showSecret } from '../lib/secrets'
@@ -28,7 +28,7 @@ export function WsMembers() {
         </div>
         {admin && (
           <Button variant="primary" onClick={() => setAdding(true)}>
-            Add member
+            Add members…
           </Button>
         )}
       </div>
@@ -37,81 +37,58 @@ export function WsMembers() {
       <UsersGrid ws={w} />
       <div className="eyebrow mt-7 mb-2.5">Agents</div>
       <AgentsGrid ws={w} />
-      <AddMemberModal open={adding} onClose={() => setAdding(false)} onToken={(t, agentId) => showWsToken(w, agentId, t, 'Agent added')} />
+      <AddMembersModal open={adding} onClose={() => setAdding(false)} />
     </div>
   )
 }
 
-function AddMemberModal({ open, onClose, onToken }: { open: boolean; onClose: () => void; onToken: (t: string, agentId: string) => void }) {
+/**
+ * Add members… (the same pattern in Keyhole): pick people and agents from the organization, each with a workspace
+ * role. Every agent added gets its own workspace token, shown once, one after another.
+ */
+function AddMembersModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return open ? <AddMembers onClose={onClose} /> : null
+}
+function AddMembers({ onClose }: { onClose: () => void }) {
   const d = useDB()
   const w = useWorkspace()
-  const [kind, setKind] = useState<'agent' | 'human'>('agent')
-  const [id, setId] = useState('')
-  const [role, setRole] = useState<MemberRole>('member')
-  const [read, setRead] = useState(true)
-  const [write, setWrite] = useState(true)
-  const candidates = kind === 'agent' ? orgAgents(d).filter((a) => a.status !== 'revoked' && !w.members.some((m) => m.kind === 'agent' && m.id === a.id)) : orgHumans(d).filter((h) => !w.members.some((m) => m.kind === 'human' && m.id === h.id))
-  useEffect(() => {
-    if (open) {
-      setRole('member')
-      setRead(true)
-      setWrite(true)
-    }
-  }, [open])
-  useEffect(() => setId(candidates[0]?.id ?? ''), [kind, open]) // eslint-disable-line
-  const a = kind === 'agent' ? agentById(d, id) : null
-  const preCheck = a && (a.filters.workspaceBlocklist.includes(w.id) ? `${a.label} blocks this workspace on its own side — it will be a member but can’t get in.` : w.agentBlocklist.includes(a.id) ? `${a.label} is on this workspace’s blocklist — the block wins over membership.` : null)
-  return (
-    <Modal open={open} onClose={onClose} width={500} title={`Add to ${w.name}`}>
-      <Segmented
-        label="Kind of member"
-        value={kind}
-        onChange={setKind}
-        options={[
-          { value: 'agent', label: 'Agent' },
-          { value: 'human', label: 'Human' },
-        ]}
-      />
-      <Field label={kind === 'agent' ? 'Agent' : 'Person'}>
-        {candidates.length ? (
-          <Select value={id} onChange={(e) => setId(e.target.value)}>
-            {candidates.map((c) => (
-              <option key={c.id} value={c.id}>
-                {'label' in c ? `${c.label} · ${c.id}` : `${c.name} · ${c.email}`}
-              </option>
-            ))}
-          </Select>
-        ) : (
-          <div className="text-sm2 text-zinc-500">
-            {kind === 'agent' ? (
-              <>
-                Every agent is already here. {isOrgAdmin(d) ? <Link to="/players/agents?new=1">Register a new agent</Link> : 'Org admins register new agents.'}
-              </>
-            ) : (
-              <>
-                Everyone is already here. {isOrgAdmin(d) ? <Link to="/players/users">Invite someone</Link> : 'Org admins invite new people.'}
-              </>
-            )}
-          </div>
-        )}
-      </Field>
-      <Field label="Role" hint={role === 'admin' ? `Delegated admin: can add and remove members, delegate admin, set the blocklist and manage webhooks${kind === 'agent' ? ' — over the API and MCP' : ''}.` : 'Reads and writes messages as allowed below.'}>
-        <Segmented
-          label="Role"
-          value={role}
-          onChange={setRole}
-          options={[
-            { value: 'member', label: 'Member' },
-            { value: 'admin', label: 'Workspace admin' },
-          ]}
-        />
-      </Field>
-      <div className="flex gap-6">
-        <Checkbox checked={kind === 'human' || read} disabled={kind === 'human'} onChange={setRead} label={kind === 'human' ? 'Read (always, for humans)' : 'Read'} />
-        <Checkbox checked={write} onChange={setWrite} label="Write" />
+  const [sel, setSel] = useState<Record<string, MemberRole>>({})
+  const people = orgHumans(d).filter((h) => !w.members.some((m) => m.kind === 'human' && m.id === h.id))
+  const agents = orgAgents(d).filter((a) => a.status !== 'revoked' && !w.members.some((m) => m.kind === 'agent' && m.id === a.id))
+  const key = (kind: string, id: string) => `${kind}:${id}`
+  const warn = (id: string) => {
+    const a = agentById(d, id)
+    return a && (a.filters.workspaceBlocklist.includes(w.id) ? `${a.label} blocks ${w.name} on its own side — it will be a member but can’t get in` : w.agentBlocklist.includes(a.id) ? `${w.name} blocks ${a.label} — the block wins over membership` : null)
+  }
+  const pickRow = (kind: 'human' | 'agent', id: string, label: ReactNode) => {
+    const k = key(kind, id)
+    return (
+      <div key={k} className="border-b border-line px-3 py-2 last:border-b-0">
+        <div className="flex items-center justify-between gap-3">
+          <Checkbox checked={!!sel[k]} onChange={(v) => setSel(v ? { ...sel, [k]: 'member' } : Object.fromEntries(Object.entries(sel).filter(([x]) => x !== k)))} label={label} />
+          <select aria-label={`Role for ${kind === 'agent' ? agentById(d, id)?.label : humanById(d, id)?.name}`} disabled={!sel[k]} value={sel[k] ?? 'member'} onChange={(e) => setSel({ ...sel, [k]: e.target.value as MemberRole })} className="rounded-md border border-edge bg-panel px-2 py-1 text-xs text-zinc-300 outline-none focus:border-zinc-500 disabled:opacity-40">
+            <option value="member">Member</option>
+            <option value="admin">Workspace admin</option>
+          </select>
+        </div>
+        {kind === 'agent' && sel[k] && warn(id) && <div className="mt-1 text-2xs text-amber-400">{warn(id)}</div>}
       </div>
-      {preCheck && <Callout tone="amber">{preCheck}</Callout>}
-      {kind === 'agent' && <div className="text-xs text-zinc-500">A workspace token is issued for this agent and shown once.</div>}
+    )
+  }
+  const n = Object.keys(sel).length
+  return (
+    <Modal open onClose={onClose} width={560} title={`Add members to ${w.name}`}>
+      <div className="eyebrow-sm">People</div>
+      <div role="group" aria-label="People" className="flex max-h-56 flex-col overflow-y-auto rounded-lg border border-edge bg-page">
+        {people.map((h) => pickRow('human', h.id, <span>{h.name} <span className="text-xs2 text-zinc-500">· {h.email}{statusIn(h, w.orgId) !== 'active' ? ` · ${statusIn(h, w.orgId)}` : ''}</span></span>))}
+        {!people.length && <div className="p-3 text-sm2 text-zinc-500">Everyone in the organization is here. {isOrgAdmin(d) ? <Link to="/players/users">Invite someone</Link> : 'Org admins invite new people.'}</div>}
+      </div>
+      <div className="eyebrow-sm">Agents</div>
+      <div role="group" aria-label="Agents" className="flex max-h-56 flex-col overflow-y-auto rounded-lg border border-edge bg-page">
+        {agents.map((a) => pickRow('agent', a.id, <span className="font-mono">{a.label} <span className="font-sans text-xs2 text-zinc-500">· {a.id}</span></span>))}
+        {!agents.length && <div className="p-3 text-sm2 text-zinc-500">Every agent is already here. {isOrgAdmin(d) ? <Link to="/players/agents?new=1">Register a new agent</Link> : 'Org admins register new agents.'}</div>}
+      </div>
+      <div className="text-xs text-zinc-500">People always read every message; agents join with read and write, which you can narrow in the grid. Each agent gets its own workspace token, shown once. A workspace admin manages this workspace’s members — nothing org-level.</div>
       <Footer>
         <Button size="lg" onClick={onClose}>
           Cancel
@@ -119,14 +96,19 @@ function AddMemberModal({ open, onClose, onToken }: { open: boolean; onClose: ()
         <Button
           size="lg"
           variant="primary"
-          disabled={!id}
+          disabled={!n}
           onClick={() => {
-            const t = actions.addMember(w.id, { kind, id }, role, read, write)
+            const tokens: [string, string][] = []
+            for (const [k, role] of Object.entries(sel)) {
+              const [kind, id] = k.split(':') as ['human' | 'agent', string]
+              const t = actions.addMember(w.id, { kind, id }, role, true, true)
+              if (t) tokens.push([id, t])
+            }
             onClose()
-            if (t) onToken(t, id)
+            tokens.forEach(([id, t], i) => showWsToken(w, id, t, `Workspace token for ${agentById(getDB(), id)?.label ?? id}${tokens.length > 1 ? ` (${i + 1} of ${tokens.length})` : ''}`))
           }}
         >
-          Add {kind}
+          {n ? `Add ${n} member${n === 1 ? '' : 's'}` : 'Add members'}
         </Button>
       </Footer>
     </Modal>

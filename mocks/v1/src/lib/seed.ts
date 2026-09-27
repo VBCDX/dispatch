@@ -1,6 +1,6 @@
 import { accessVerdict, targets } from './access'
 import { DAY, HOUR, MIN } from './format'
-import { SUITE_AGENTS, SUITE_ORGS, SUITE_USERS, SUITE_WORKSPACES } from './suite'
+import { SUITE_AGENTS, SUITE_EVENTS, SUITE_ORGS, SUITE_USERS, SUITE_WORKSPACES } from './suite'
 import type { Agent, AgentClient, AuditEvent, DB, Human, Membership, Message, Workspace } from './types'
 
 const NOTIFS = { webhookFailing: true, blockedAttempt: true, messageExpiring: false, agentOffline: true, memberAdded: false }
@@ -316,7 +316,7 @@ export function populatedDB(): DB {
   ]
 
   const ev = (id: string, ago: number, e: Omit<AuditEvent, 'id' | 'at' | 'orgId'>): AuditEvent => ({ id, at: now - ago, orgId: 'org_acme', ...e })
-  // `shared: true` marks suite events (the shared org, workspaces and players); the rest are Dispatch's own.
+  // Dispatch's own history. The suite's shared history comes from SUITE_EVENTS (identical in Keyhole), below.
   const events: AuditEvent[] = [
     ev('ev_1', 6 * MIN, { wsId: 'ws_prod', type: 'message', severity: 'ok', actor: 'Mia Chen', actorKind: 'human', actorId: 'u_mia', object: 'Posted to Production · #qa', result: 'For 8 agents · 1 held', trk: 'trk_m1a00008' }),
     ev('ev_2', 8 * MIN + 30_000, { wsId: 'ws_incidents', type: 'blocked', severity: 'blocked', actor: 'web-scraper', actorKind: 'agent', actorId: 'ag_scraper', object: 'GET /v1/workspaces/ws_incidents/messages', result: 'Blocked', trk: 'trk_bl0ck0a1', reason: 'Blocked: Incidents blocks web-scraper — the workspace blocklist overrides its membership.', detail: [['Agent ID', 'ag_scraper'], ['Workspace ID', 'ws_incidents'], ['Rule', 'Workspace agent blocklist'], ['Token', 'dsp_ws_••••Lm3c (valid)']], link: { label: 'Open Incidents › Access', to: '/workspaces/ws_incidents/access' } }),
@@ -325,18 +325,19 @@ export function populatedDB(): DB {
     ev('ev_5', 12 * MIN, { wsId: 'ws_prod', type: 'webhook', severity: 'warn', actor: 'Dispatch', actorKind: 'system', object: 'Fired ci.acme.dev/hooks/smoke-suite · msg_05', result: '503 · retrying', trk: 'trk_wh0005a1', reason: 'CI answered 503. Dispatch retries 3 times with backoff (30 s, 2 min, 10 min).' }),
     ev('ev_6', 12 * MIN, { wsId: 'ws_prod', type: 'receipt', severity: 'ok', actor: 'deployer', actorKind: 'agent', actorId: 'ag_deployer', object: 'Acknowledged msg_05', result: 'All targets acked', trk: 'trk_rc0005ak' }),
     ev('ev_7', 18 * MIN, { wsId: 'ws_prod', type: 'webhook', severity: 'blocked', actor: '203.0.113.40', actorKind: 'webhook', actorId: 'lsn_8Kq2vT', object: 'Listener lsn_8Kq2vT · message msg_06', result: '401 · wrong password', trk: 'trk_ls0006c1', reason: 'Rejected: basic-auth password didn’t match. Nothing was appended.' }),
-    ev('ev_8', 35 * MIN, { wsId: 'ws_prod', type: 'admin', severity: 'info', actor: 'planner', actorKind: 'agent', actorId: 'ag_planner', object: 'Added deployer (agent) to Production as member · token ••••De2h — as delegated admin', result: 'Done', trk: 'trk_ad0m0008', shared: true }),
+    ev('ev_8', 35 * MIN, { wsId: 'ws_prod', type: 'admin', severity: 'info', actor: 'planner', actorKind: 'agent', actorId: 'ag_planner', object: 'Added deployer (agent) to Production as member · token ••••De2h — as delegated admin', result: 'Done', trk: 'trk_ad0m0008' }),
     ev('ev_9', 2 * HOUR, { wsId: 'ws_prod', type: 'context', severity: 'info', actor: 'planner', actorKind: 'agent', actorId: 'ag_planner', object: 'Updated context “Release 4.2 checklist” → v3', result: 'Done', trk: 'trk_cx0009v3' }),
     ev('ev_10', 3 * HOUR, { wsId: 'ws_staging', type: 'blocked', severity: 'blocked', actor: 'docs-agent', actorKind: 'agent', actorId: 'ag_docs', object: 'GET /v1/workspaces/ws_staging/messages', result: 'Blocked', trk: 'trk_bl0ck0b2', reason: 'Blocked: docs-agent blocks Staging on its own side (agent workspace blocklist).', link: { label: 'Open docs-agent’s filters', to: '/players/agents/ag_docs' } }),
     ev('ev_11', 1 * DAY, { wsId: 'ws_prod', type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Delegated admin on Production to planner (agent)', result: 'Done', trk: 'trk_dl9a0011' }),
-    ev('ev_12', 1 * DAY, { wsId: 'ws_incidents', type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Delegated admin on Incidents to Mia Chen (human)', result: 'Done', trk: 'trk_dl9a0012', shared: true }),
     ev('ev_13', 2 * DAY, { wsId: 'ws_incidents', type: 'admin', severity: 'info', actor: 'Ravi Mehta', actorKind: 'human', actorId: 'u_ravi', object: 'Added web-scraper to Incidents blocklist', result: 'Done', trk: 'trk_bl0c0013' }),
-    ev('ev_14', 3 * DAY, { type: 'admin', severity: 'warn', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Suspended Jo Reyes', result: 'Unaffected: 0 agents they registered, 0 admin delegations', trk: 'trk_su5p0014', detail: [['Human ID', 'u_jo'], ['Before', 'active'], ['After', 'suspended']], shared: true }),
-    ev('ev_16', 2 * DAY, { type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Invited sam@acme.com as user', result: 'Done', trk: 'trk_1nv10016', shared: true }),
     ev('ev_15', 3 * DAY, { type: 'admin', severity: 'info', actor: 'Dana Keller', actorKind: 'human', actorId: 'u_dana', object: 'Suspended agent triage-bot', result: 'Done', trk: 'trk_su5p0015', detail: [['Agent ID', 'ag_triage'], ['Before', 'active'], ['After', 'suspended']] }),
     { id: 'ev_n1', at: now - 2 * HOUR, orgId: 'org_nw', wsId: 'ws_docs', type: 'message', severity: 'ok', actor: 'Mia Chen', actorKind: 'human', actorId: 'u_mia', object: 'Posted to Docs site · #docs #changelog', result: 'For 1 agent', trk: 'trk_nw0000n1' },
-    { id: 'ev_n2', at: now - 10 * DAY, orgId: 'org_nw', wsId: 'ws_docs', type: 'admin', severity: 'info', actor: 'Leo Park', actorKind: 'human', actorId: 'u_leo', object: 'Added Noor Haddad (human) to Docs site as member', result: 'Done', trk: 'trk_nw0000n2', shared: true },
   ]
+
+  // The shared suite history, exactly as Keyhole seeds it.
+  for (const e of SUITE_EVENTS)
+    events.push({ id: e.id, at: now - e.minutesAgo * MIN, orgId: e.orgId, ...(e.workspaceId ? { wsId: e.workspaceId } : {}), type: 'admin', severity: e.severity, actor: SUITE_USERS.find((u) => u.id === e.actorId)?.name ?? e.actorId, actorKind: 'human', actorId: e.actorId, object: e.object, result: 'Done', trk: `trk_${e.id.replace(/[^a-z0-9]/g, '').slice(2, 10)}`, ...(e.detail ? { detail: e.detail } : {}), shared: true })
+  events.sort((a, b) => b.at - a.at)
 
   const db: DB = {
     scenario: 'populated',

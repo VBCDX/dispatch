@@ -8,12 +8,12 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { evaluate } from '../lib/access'
 import { ago, clock } from '../lib/format'
-import { actions, canAdmin, clientLabel, emailTaken, explicitHumanAdmins, humanById, isActive, isLastOwner, isOnline, isOrgAdmin, membershipsOf, org, orgAdmins, orgAgents, orgEvents, orgHumans, ORG_ADMIN_ROLES, statusIn, useDB, useNow, workspaceRole } from '../lib/store'
+import { actions, canAdmin, clientLabel, emailTaken, explicitHumanAdmins, humanById, isActive, isLastOwner, isOnline, isOrgAdmin, membershipsOf, org, orgAdmins, orgAgents, orgHumans, lastActiveIn, ORG_ADMIN_ROLES, statusIn, useDB, useNow, workspaceRole } from '../lib/store'
 import type { Agent, Human, MemberRole, OrgRole, Workspace } from '../lib/types'
 import { ListBody, PrincipalChip } from '../components/shared'
 import { Button, Callout, Checkbox, Field, Footer, Input, Menu, Modal, Row, Segmented, StatusInline, Table, Toggle, cx } from '../components/ui'
 import { CopyChip } from '../components/credential'
-import { useAgentActions, useUserActions } from './playerActions'
+import { REASONS, useAgentActions, useUserActions } from './playerActions'
 
 /** "Production (admin), Staging, Incidents +2" — more than three collapse to "+N". */
 export function WsNames({ items }: { items: { id: string; name: string; admin: boolean; refused?: string | null }[] }) {
@@ -40,12 +40,18 @@ export function WsNames({ items }: { items: { id: string; name: string; admin: b
 }
 
 /** Hands a freshly issued workspace token to the root secret host (one after another when several are issued). */
+/** The agent's lifecycle — Active, Suspended or Revoked — the suite's shared Status column. */
 export function AgentStatus({ a }: { a: Agent }) {
-  const now = useNow()
   if (a.status === 'revoked') return <StatusInline tone="gray">Revoked</StatusInline>
   if (a.status === 'suspended') return <StatusInline tone="amber">Suspended</StatusInline>
-  if (isOnline(a)) return <StatusInline tone="green">Online</StatusInline>
-  return <StatusInline tone="gray">{a.lastSeen ? `Offline · ${ago(a.lastSeen, now).toLowerCase()}` : 'Never connected'}</StatusInline>
+  return <StatusInline tone="green">Active</StatusInline>
+}
+
+/** Presence (Dispatch): "● online now", or when it was last seen. Shown under Last used, never as the Status. */
+export function AgentLastUsed({ a }: { a: Agent }) {
+  const now = useNow()
+  if (isOnline(a)) return <StatusInline tone="green">online now</StatusInline>
+  return <span className="text-xs text-zinc-500">{a.lastSeen ? ago(a.lastSeen, now) : 'Never'}</span>
 }
 
 export function PersonStatus({ h, orgId }: { h: Human; orgId: string }) {
@@ -138,11 +144,8 @@ export function UsersGrid({ ws, className }: { ws?: Workspace; className?: strin
   const now = useNow()
   const { menuFor, dialogs, setPending } = useUserActions(ws)
   const all = orgHumans(d)
-  // In a workspace: its human members, plus the org admins who are its default admins (rule 2) when it has no explicit human admin.
-  const list = ws ? all.filter((h) => ws.members.some((m) => m.kind === 'human' && m.id === h.id) || workspaceRole(d, ws, { kind: 'human', id: h.id }) === 'Default admin (org)') : all
-  // Last active *in this organization*, from its own audit log. Activity elsewhere is never shown here.
-  const lastActiveHere = new Map<string, number>()
-  for (const e of orgEvents(d)) if (e.actorKind === 'human' && e.actorId && !lastActiveHere.has(e.actorId)) lastActiveHere.set(e.actorId, e.at)
+  // In a workspace: its human members plus every active org admin (they administer every workspace).
+  const list = ws ? all.filter((h) => workspaceRole(d, ws, { kind: 'human', id: h.id })) : all
   const showMenu = isOrgAdmin(d) || (!!ws && canAdmin(d, ws))
   const cols = ws ? U_COLS_WS : U_COLS
   return (
@@ -167,12 +170,11 @@ export function UsersGrid({ ws, className }: { ws?: Workspace; className?: strin
                 <div>
                   <PersonStatus h={h} orgId={d.currentOrgId} />
                 </div>
-                <div className="text-zinc-500">{h.id === d.currentUserId ? 'Now' : lastActiveHere.has(h.id) ? ago(lastActiveHere.get(h.id)!, now) : '—'}</div>
+                <div className="text-zinc-500">{h.id === d.currentUserId ? 'Now' : lastActiveIn(d, h.id) ? ago(lastActiveIn(d, h.id), now) : '—'}</div>
                 <div className="truncate text-xs text-zinc-400">{orgAdminRole ? <span className="text-zinc-400">All (org admin)</span> : <WsNames items={mine.map(({ w, m }) => ({ id: w.id, name: w.name, admin: m.role === 'admin' }))} />}</div>
                 {ws && (
                   <div className={cx('text-xs', wsRole === 'Member' ? 'text-zinc-400' : 'text-green-400')}>
                     {wsRole}
-                    {!m && <div className="text-2xs text-zinc-600">not a member</div>}
                     {m?.delegatedBy && m.role === 'admin' && <div className="text-2xs text-zinc-500">delegated by {m.delegatedBy}</div>}
                     {m && !isActive(h, ws.orgId) && <div className="text-2xs text-amber-400">{statusIn(h, ws.orgId)} — can’t act</div>}
                   </div>
@@ -182,7 +184,7 @@ export function UsersGrid({ ws, className }: { ws?: Workspace; className?: strin
                     {m ? <Toggle on={m.write || orgAdminRole} disabled={!canAdmin(d, ws) || orgAdminRole} label={`Write for ${h.name} in ${ws.name}`} onChange={(v) => (v ? actions.setMember(ws.id, { kind: 'human', id: h.id }, { write: true }) : setPending({ kind: 'write', m, w: ws }))} /> : <span className="text-2xs text-zinc-500">Always</span>}
                   </div>
                 )}
-                <div className="text-right">{showMenu && <Menu label={`Actions for ${h.name}`} items={menuFor(h)} />}</div>
+                <div className="text-right">{showMenu && <Menu label={`Actions for ${h.name}`} items={menuFor(h)} disabledReason={ws && orgAdminRole ? REASONS.orgAdminWorkspaces : undefined} />}</div>
               </Row>
             )
           })}
@@ -196,8 +198,8 @@ export function UsersGrid({ ws, className }: { ws?: Workspace; className?: strin
 /* ------------------------------------------------------------------ */
 /* Agents grid                                                         */
 /* ------------------------------------------------------------------ */
-const A_COLS = 'minmax(140px,1.2fr) 120px 120px 130px 140px 90px minmax(150px,1.4fr) 140px 110px 36px'
-const A_COLS_WS = 'minmax(140px,1.2fr) 120px 120px 150px 140px 90px minmax(140px,1.2fr) 140px 110px 130px 150px 36px'
+const A_COLS = 'minmax(140px,1.2fr) 120px 100px 170px 140px 100px minmax(150px,1.4fr) 140px 110px 36px'
+const A_COLS_WS = 'minmax(140px,1.2fr) 120px 100px 170px 140px 100px minmax(140px,1.2fr) 140px 110px 130px 150px 36px'
 
 /**
  * Players › Agents — Label, Agent ID, Status, Token, Created, Last used, Workspaces, then Dispatch's Reported
@@ -237,7 +239,7 @@ export function AgentsGrid({ ws, className }: { ws?: Workspace; className?: stri
                   <AgentStatus a={a} />
                 </div>
                 <div className="masked-token text-xs text-zinc-500">
-                  ••••{a.tokenLast4}
+                  dsp_agent_••••{a.tokenLast4}
                   {m && (
                     <div className="font-sans text-2xs tracking-normal text-zinc-500">
                       ws <span className="masked-token">••••{m.tokenLast4 ?? '????'}</span>
@@ -249,7 +251,9 @@ export function AgentsGrid({ ws, className }: { ws?: Workspace; className?: stri
                   {a.createdBy}
                   <div className="text-2xs text-zinc-500">{ago(a.createdAt, now)}</div>
                 </div>
-                <div className="text-xs text-zinc-500">{a.lastSeen ? ago(a.lastSeen, now) : 'Never'}</div>
+                <div>
+                  <AgentLastUsed a={a} />
+                </div>
                 <div className="truncate text-xs text-zinc-400">
                   <WsNames items={mine.map(({ w, m }) => ({ id: w.id, name: w.name, admin: m.role === 'admin', refused: evaluate(d, a.id, w.id, 'read').reason }))} />
                 </div>
