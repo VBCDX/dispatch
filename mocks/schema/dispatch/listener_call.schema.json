@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/listener_call.schema.json",
+  "title": "Listener call",
+  "description": "dispatch.listener_calls — every call to a listener URL, accepted or not (IP is PII). Accepted calls also append a message (author kind listener). TTL 90 days.",
+  "type": "object",
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "webhookId",
+    "listenerId",
+    "messageId",
+    "at",
+    "status",
+    "fromIp",
+    "bytes",
+    "trk",
+    "deleteAt"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/listenerCallId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "webhookId": {
+      "$ref": "../shared/common.schema.json#/$defs/webhookId"
+    },
+    "listenerId": {
+      "$ref": "../shared/common.schema.json#/$defs/listenerId"
+    },
+    "messageId": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId"
+    },
+    "at": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "status": {
+      "enum": [
+        202,
+        401,
+        410,
+        413,
+        429
+      ]
+    },
+    "fromIp": {
+      "$ref": "../shared/common.schema.json#/$defs/ipAddress"
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "appendedMessageId": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId"
+    },
+    "trk": {
+      "$ref": "../shared/common.schema.json#/$defs/trackingCode"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "deleteAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/receipt.schema.json",
+  "title": "Receipt",
+  "description": "dispatch.receipts — one per (message, targeted agent). Delivered/read/acked are never relabelled (rule 4); a refusal filters only what hasn't been delivered (rule 5) and never counts as completion.",
+  "type": "object",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "filtered"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "filtered"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "held"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "held"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "delivered",
+              "read",
+              "acked"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "deliveredAt"
+        ]
+      }
+    }
+  ],
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "messageId",
+    "agentId",
+    "state",
+    "createdAt",
+    "updatedAt",
+    "deleteAt"
+  ],
+  "properties": {
+    "_id": {
+      "type": "string",
+      "description": "`<messageId>:<agentId>`",
+      "pattern": "^msg_[A-Za-z0-9_]+:ag_[A-Za-z0-9_]+$"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "messageId": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId"
+    },
+    "agentId": {
+      "$ref": "../shared/common.schema.json#/$defs/agentId"
+    },
+    "state": {
+      "enum": [
+        "queued",
+        "held",
+        "delivered",
+        "read",
+        "acked",
+        "filtered",
+        "never_delivered"
+      ],
+      "description": "held: queued behind a reversible refusal (suspended, read off), re-checked at delivery. never_delivered: the message expired first."
+    },
+    "deliveredAt": {
+      "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+    },
+    "readAt": {
+      "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+    },
+    "ackAt": {
+      "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+    },
+    "deliveredVia": {
+      "type": "object",
+      "required": [
+        "transport"
+      ],
+      "properties": {
+        "transport": {
+          "enum": [
+            "mcp",
+            "rest",
+            "sse",
+            "sidecar"
+          ]
+        },
+        "connectionId": {
+          "type": "string"
+        },
+        "sidecarId": {
+          "$ref": "../shared/common.schema.json#/$defs/dispatchSidecarId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "held": {
+      "type": "object",
+      "required": [
+        "rule",
+        "cause",
+        "at"
+      ],
+      "properties": {
+        "rule": {
+          "type": "string"
+        },
+        "cause": {
+          "enum": [
+            "suspended",
+            "membership read off",
+            "turned reading off"
+          ]
+        },
+        "at": {
+          "$ref": "../shared/common.schema.json#/$defs/isoDate"
+        }
+      },
+      "additionalProperties": false
+    },
+    "filtered": {
+      "type": "object",
+      "required": [
+        "rule",
+        "cause",
+        "at",
+        "afterSend"
+      ],
+      "properties": {
+        "rule": {
+          "type": "string"
+        },
+        "cause": {
+          "type": "string"
+        },
+        "at": {
+          "$ref": "../shared/common.schema.json#/$defs/isoDate"
+        },
+        "afterSend": {
+          "type": "boolean",
+          "description": "true: a final refusal while queued (counts as a lost target for fire hooks); false: filtered at send, never a target."
+        }
+      },
+      "additionalProperties": false
+    },
+    "removed": {
+      "type": "object",
+      "description": "Access removed after delivery: a note only; the recorded state stands.",
+      "required": [
+        "at",
+        "reason",
+        "final",
+        "cause"
+      ],
+      "properties": {
+        "at": {
+          "$ref": "../shared/common.schema.json#/$defs/isoDate"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "final": {
+          "type": "boolean"
+        },
+        "cause": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "createdAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "updatedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "deleteAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "_id": "msg_06:ag_deployer",
+      "orgId": "org_acme",
+      "workspaceId": "ws_prod",
+      "messageId": "msg_06",
+      "agentId": "ag_deployer",
+      "state": "read",
+      "deliveredAt": "2026-09-27T13:40:04Z",
+      "readAt": "2026-09-27T13:43:10Z",
+      "ackAt": null,
+      "deliveredVia": {
+        "transport": "mcp",
+        "connectionId": "c_7Hq2"
+      },
+      "createdAt": "2026-09-27T13:40:00Z",
+      "updatedAt": "2026-09-27T13:43:10Z",
+      "deleteAt": "2026-12-26T13:40:00Z"
+    },
+    {
+      "_id": "msg_06:ag_scraper",
+      "orgId": "org_acme",
+      "workspaceId": "ws_prod",
+      "messageId": "msg_06",
+      "agentId": "ag_scraper",
+      "state": "filtered",
+      "filtered": {
+        "rule": "Production blocks this agent — overrides membership.",
+        "cause": "blocked",
+        "at": "2026-09-27T13:40:00Z",
+        "afterSend": false
+      },
+      "createdAt": "2026-09-27T13:40:00Z",
+      "updatedAt": "2026-09-27T13:40:00Z",
+      "deleteAt": "2026-12-26T13:40:00Z"
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/context_note_version.schema.json",
+  "title": "Context note version",
+  "description": "dispatch.context_note_versions — immutable history (_id = `<noteId>@<version>`).",
+  "type": "object",
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "noteId",
+    "version",
+    "title",
+    "body",
+    "at",
+    "by"
+  ],
+  "properties": {
+    "_id": {
+      "type": "string",
+      "pattern": "^nt_[A-Za-z0-9_]+@[0-9]+$"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "noteId": {
+      "$ref": "../shared/common.schema.json#/$defs/noteId"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "title": {
+      "type": "string"
+    },
+    "body": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "at": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "by": {
+      "$ref": "../shared/common.schema.json#/$defs/actorRef"
+    }
+  },
+  "additionalProperties": false
+}

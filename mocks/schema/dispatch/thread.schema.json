@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/thread.schema.json",
+  "title": "Thread summary",
+  "description": "dispatch.threads — one per root message (_id = root messageId), maintained on reply. Replies are messages with parentId/threadRootId.",
+  "type": "object",
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "replyCount",
+    "lastReplyAt",
+    "participants",
+    "updatedAt",
+    "deleteAt"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "replyCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "lastReplyAt": {
+      "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+    },
+    "participants": {
+      "type": "array",
+      "items": {
+        "$ref": "message.schema.json#/$defs/author"
+      },
+      "maxItems": 100
+    },
+    "updatedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "deleteAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/enrollment_token.schema.json",
+  "title": "Dispatch enrollment token",
+  "description": "dispatch.enrollment_tokens — single-use dsp_enr_… tokens (15 minutes) for a Dispatch sidecar bound to one agent.",
+  "allOf": [
+    {
+      "$ref": "../shared/common.schema.json#/$defs/enrollmentTokenBase"
+    },
+    {
+      "properties": {
+        "app": {
+          "const": "dispatch"
+        },
+        "componentKind": {
+          "const": "dispatch_sidecar"
+        },
+        "intent": {
+          "type": "object",
+          "required": [
+            "name",
+            "agentId",
+            "local"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "agentId": {
+              "$ref": "../shared/common.schema.json#/$defs/agentId"
+            },
+            "local": {
+              "$ref": "../shared/common.schema.json#/$defs/localEndpoint"
+            },
+            "pullWebhooks": {
+              "type": "boolean"
+            },
+            "allowedTargets": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "cachePolicy": {
+              "$ref": "../shared/common.schema.json#/$defs/cachePolicy"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "intent"
+      ]
+    }
+  ],
+  "unevaluatedProperties": false
+}

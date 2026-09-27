@@ -1,0 +1,439 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vbcdx.dev/dispatch/webhook.schema.json",
+  "title": "Message webhook",
+  "description": "dispatch.webhooks — a message's outbound (fire) or inbound (listen) webhook. Retry schedule 30 s, 2 min, 10 min (4 attempts) runs from Redis (dsp:wh:due); after the last failure the row goes to gave_up and a webhook_dead_letters row is written. Nothing fires after the message expires.",
+  "type": "object",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "fire"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "fire"
+        ],
+        "not": {
+          "required": [
+            "listen"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "listen"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "listen"
+        ],
+        "not": {
+          "required": [
+            "fire"
+          ]
+        },
+        "properties": {
+          "expiresAt": {
+            "$ref": "../shared/common.schema.json#/$defs/isoDate"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "attempt": {
+      "type": "object",
+      "required": [
+        "id",
+        "at",
+        "status",
+        "ms",
+        "trk"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "../shared/common.schema.json#/$defs/webhookAttemptId"
+        },
+        "at": {
+          "$ref": "../shared/common.schema.json#/$defs/isoDate"
+        },
+        "status": {
+          "type": "integer",
+          "description": "HTTP status; 0 = no response (timeout/network).",
+          "minimum": 0
+        },
+        "ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trk": {
+          "$ref": "../shared/common.schema.json#/$defs/trackingCode"
+        },
+        "note": {
+          "type": "string"
+        },
+        "manual": {
+          "type": "boolean"
+        },
+        "by": {
+          "$ref": "../shared/common.schema.json#/$defs/actorRef"
+        }
+      },
+      "additionalProperties": false
+    },
+    "fire": {
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "delivery": {
+                "properties": {
+                  "mode": {
+                    "const": "sidecar_pull"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "delivery": {
+                "required": [
+                  "sidecarId"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "required": [
+        "url",
+        "trigger",
+        "delivery",
+        "state",
+        "attemptCount"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "trigger": {
+          "enum": [
+            "send",
+            "all-read",
+            "all-ack"
+          ]
+        },
+        "auth": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "user",
+                "password"
+              ],
+              "properties": {
+                "user": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "password": {
+                  "$ref": "../shared/common.schema.json#/$defs/secretRef",
+                  "description": "Basic-auth password Dispatch presents. Sealed (dss://sec_…); Dispatch must be able to send it, so it can't be a hash."
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delivery": {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "push",
+                "sidecar_pull"
+              ],
+              "description": "sidecar_pull: a Dispatch sidecar inside the target network pulls the delivery and POSTs locally, so the target needs no ingress."
+            },
+            "sidecarId": {
+              "$ref": "../shared/common.schema.json#/$defs/dispatchSidecarId"
+            }
+          },
+          "additionalProperties": false
+        },
+        "state": {
+          "enum": [
+            "waiting",
+            "retrying",
+            "delivered",
+            "gave_up",
+            "no_targets",
+            "expired",
+            "target_lost"
+          ]
+        },
+        "firedAt": {
+          "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+        },
+        "nextAttemptAt": {
+          "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+        },
+        "attemptCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attempt"
+          },
+          "description": "Snapshot copied from Redis dsp:wh:attempts:{id} on each attempt and at the terminal state.",
+          "maxItems": 16
+        },
+        "outcomeAt": {
+          "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+        },
+        "dropped": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "agentId",
+              "cause",
+              "reason",
+              "at"
+            ],
+            "properties": {
+              "agentId": {
+                "$ref": "../shared/common.schema.json#/$defs/agentId"
+              },
+              "cause": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "at": {
+                "$ref": "../shared/common.schema.json#/$defs/isoDate"
+              }
+            },
+            "additionalProperties": false
+          },
+          "description": "Targets that could no longer receive the message before meeting the trigger (a refusal never counts as completion)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "listen": {
+      "type": "object",
+      "required": [
+        "listenerId",
+        "url",
+        "user",
+        "password",
+        "state"
+      ],
+      "properties": {
+        "listenerId": {
+          "$ref": "../shared/common.schema.json#/$defs/listenerId"
+        },
+        "url": {
+          "type": "string",
+          "description": "https://hooks.dispatch.dev/l/{listenerId}",
+          "format": "uri"
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1
+        },
+        "password": {
+          "$ref": "../shared/common.schema.json#/$defs/tokenDigest",
+          "description": "dsp_hook_… generated by Dispatch, shown once; only the hash is kept."
+        },
+        "passwordRotatedAt": {
+          "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+        },
+        "state": {
+          "enum": [
+            "open",
+            "closed"
+          ],
+          "description": "closed once the message expires (calls get 410)."
+        },
+        "callCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lastCallAt": {
+          "$ref": "../shared/common.schema.json#/$defs/nullableDate"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "_id",
+    "orgId",
+    "workspaceId",
+    "messageId",
+    "mode",
+    "createdAt",
+    "createdBy",
+    "updatedAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "_id": {
+      "$ref": "../shared/common.schema.json#/$defs/webhookId"
+    },
+    "orgId": {
+      "$ref": "../shared/common.schema.json#/$defs/orgId"
+    },
+    "workspaceId": {
+      "$ref": "../shared/common.schema.json#/$defs/workspaceId"
+    },
+    "messageId": {
+      "$ref": "../shared/common.schema.json#/$defs/messageId"
+    },
+    "mode": {
+      "enum": [
+        "fire",
+        "listen"
+      ]
+    },
+    "fire": {
+      "$ref": "#/$defs/fire"
+    },
+    "listen": {
+      "$ref": "#/$defs/listen"
+    },
+    "createdAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "createdBy": {
+      "$ref": "../shared/common.schema.json#/$defs/actorRef"
+    },
+    "updatedAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    },
+    "expiresAt": {
+      "$ref": "../shared/common.schema.json#/$defs/nullableDate",
+      "description": "= the message's expiresAt. A listener requires one."
+    },
+    "deleteAt": {
+      "$ref": "../shared/common.schema.json#/$defs/isoDate"
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "_id": "wh_06",
+      "orgId": "org_acme",
+      "workspaceId": "ws_prod",
+      "messageId": "msg_06",
+      "mode": "listen",
+      "listen": {
+        "listenerId": "lsn_8Kq2vT",
+        "url": "https://hooks.dispatch.dev/l/lsn_8Kq2vT",
+        "user": "buildfarm",
+        "password": {
+          "alg": "sha256",
+          "hash": "x9Q2x9Q2x9Q2x9Q2x9Q2x9Q2x9Q2x9Q2x9Q2x9Q2x9Q",
+          "pepperVersion": 1,
+          "prefix": "dsp_hook_",
+          "last4": "x9Q2",
+          "issuedAt": "2026-09-27T13:40:00Z",
+          "expiresAt": "2026-09-28T13:40:00Z"
+        },
+        "state": "open",
+        "callCount": 2,
+        "lastCallAt": "2026-09-27T13:51:00Z"
+      },
+      "createdAt": "2026-09-27T13:40:00Z",
+      "createdBy": {
+        "kind": "agent",
+        "id": "ag_builder",
+        "label": "builder"
+      },
+      "updatedAt": "2026-09-27T13:51:00Z",
+      "expiresAt": "2026-09-28T13:40:00Z"
+    },
+    {
+      "_id": "wh_05",
+      "orgId": "org_acme",
+      "workspaceId": "ws_prod",
+      "messageId": "msg_05",
+      "mode": "fire",
+      "fire": {
+        "url": "https://ci.acme.dev/hooks/smoke-suite",
+        "trigger": "send",
+        "auth": {
+          "user": "dispatch",
+          "password": {
+            "kind": "sealed",
+            "uri": "dss://sec_wh05",
+            "kmsKeyRef": "aws-kms:arn:aws:kms:us-east-1:888888888888:key/dispatch-sealed",
+            "version": 1,
+            "setAt": "2026-09-27T13:47:00Z",
+            "setBy": {
+              "kind": "agent",
+              "id": "ag_builder"
+            }
+          }
+        },
+        "delivery": {
+          "mode": "push"
+        },
+        "state": "delivered",
+        "firedAt": "2026-09-27T13:47:00Z",
+        "attemptCount": 2,
+        "attempts": [
+          {
+            "id": "wa_1",
+            "at": "2026-09-27T13:47:00Z",
+            "status": 503,
+            "ms": 210,
+            "trk": "trk_wh0005a1",
+            "note": "retrying"
+          },
+          {
+            "id": "wa_2",
+            "at": "2026-09-27T13:47:30Z",
+            "status": 200,
+            "ms": 188,
+            "trk": "trk_wh0005a2",
+            "note": "Retry 1 of 3"
+          }
+        ],
+        "outcomeAt": "2026-09-27T13:47:30Z"
+      },
+      "createdAt": "2026-09-27T13:47:00Z",
+      "createdBy": {
+        "kind": "agent",
+        "id": "ag_builder",
+        "label": "builder"
+      },
+      "updatedAt": "2026-09-27T13:47:30Z",
+      "expiresAt": "2026-09-28T13:47:00Z"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+# Dispatch Redis key-space
+
+Redis carries live delivery and scheduling. `dispatch.messages`, `receipts` and `webhooks` in Mongo are the system of record: everything here can be rebuilt from them (the `fanout-repair` and `schedule-repair` jobs). Keys are prefixed `dsp:`. `{…}` is the cluster hash tag. Stream IDs are Redis `<ms>-<seq>`. **Redis never holds tokens, passwords or data keys.**
+
+| Key pattern | Type | TTL / trimming | Writer | Reader | Purpose |
+|---|---|---|---|---|---|
+| `dsp:{ws_…}:msgs` | STREAM `{msgId, orgId, authorKind, authorId, audience, createdAt, expiresAt, hasWebhook}` | `XADD MINID ~` 7 days | send API (after the Mongo commit) | UI live view (XREAD, humans see everything); `fanout-repair` | The per-workspace live stream. The body isn't in the stream: clients fetch it from the API, which checks access. |
+| `dsp:{ag_…}:inbox` | STREAM `{msgId, wsId, receiptId, createdAt}` | `MAXLEN ~` 10,000; `MINID` = oldest unexpired | send API (fan-out to deliverable targets) | the agent's connections via consumer group `deliver` | The per-agent inbox across workspaces, so one sidecar or MCP session reads one stream. |
+| group `deliver` on `dsp:{ag}:inbox` | consumer group; consumers = connection IDs (MCP session, REST poller, `dsc_…`) | — | Redis | delivery worker | The PEL holds delivered-but-unacknowledged entries; `XAUTOCLAIM` after 60 s redelivers to another connection of the same agent. `XACK` once the receipt is `delivered` in Mongo. |
+| `dsp:{ag_…}:held` | SET of `msg_…:ag_…` | none; members removed on release | ladder (reversible refusal) | resume/read-on handler | Receipts held by a suspension, membership read off, or the agent's own read off. Re-checked and re-queued when access returns. |
+| `dsp:rc:{msg_…}` | HASH `{targets, queued, held, delivered, read, acked, filtered, neverDelivered}` | message `expiresAt` + 1 day (or 30 days if it never expires) | receipt transitions (Lua: move one count from the old state to the new) | fire-hook trigger check, UI; debounced flush to `messages.receiptCounts` | Makes `all-read` / `all-ack` O(1). A refusal lowers the live-target count but never counts as read or acked. |
+| `dsp:presence:{org_…}` | ZSET member = `ag_…`, score = last seen | none (trimmed) | connection handler | Players grid (online/offline), `agentOffline` notifications | The prototype's `connected` flag. |
+| `dsp:conn:{ag_…}` | HASH connId → `{transport: mcp\|rest\|sse\|sidecar, since, sidecarId}` | 90 s, refreshed by heartbeat | connection handler | delivery worker | Live connections for an agent. |
+| `dsp:expiry` | ZSET member = `msg_…`, score = expiresAt | none | send API, expire-now API | expiry worker | At expiry: close the listener (410), settle fire hooks (`expired`), mark undelivered receipts `never_delivered`. |
+| `dsp:wh:due` | ZSET member = `wh_…`, score = next attempt time | none | send API, receipt counters (trigger met), webhook worker (after a failure) | webhook worker | The retry schedule (30 s, 2 min, 10 min; 4 attempts in all). |
+| `dsp:wh:lock:{wh_…}` | STRING (SET NX PX 15000) | 15 s | webhook worker | same | One attempt at a time per hook (the manual retry also takes it). |
+| `dsp:wh:attempts:{wh_…}` | LIST of attempt JSON `{id, at, status, ms, trk, note}` | message expiry + 7 days | webhook worker, sidecar result endpoint | UI, dead-letter writer | Live attempt log; copied to `webhooks.fire.attempts`, and in full to `webhook_dead_letters` on give-up. |
+| `dsp:{dsc_…}:pull` | STREAM `{webhookId, attempt, url, method, sealedAuth, bodyRef}` | `MAXLEN ~` 1,000 | webhook worker (`sidecar_pull` hooks) | the Dispatch sidecar via consumer group `sidecar` | Pull delivery, so targets behind firewalls need no ingress. `sealedAuth` is sealed to the sidecar's X25519 key. The cursor is the group's last-delivered ID, mirrored to `sidecars.pull.webhooks.cursor`. |
+| `dsp:lsn:{lsn_…}` | HASH `{webhookId, messageId, wsId, orgId, expiresAt, pwdHash, pepperVersion}` | until `expiresAt` | send API, password rotation | listener endpoint | Listener hot path. Deleted on rotation, so the old password stops at once. |
+| `dsp:rl:lsn:{lsn_…}:{epochMinute}` | STRING (INCR) | 120 s | listener endpoint | same | 60 calls/min per listener, then 429. |
+| `dsp:rl:send:{ag_…}:{epochMinute}` | STRING (INCR) | 120 s | send API | same | Send rate limit per agent. |
+| `dsp:rl:api:{ag_…}:{epochSecond}` | STRING (INCR) | 5 s | API gateway | same | Burst limit per agent token. |
+| `dsp:rl:enroll:{ip}` | STRING (INCR) | 15 min | sidecar enroll endpoint | same | Throttles enrollment-token guessing. |
+| `dsp:inv:{org_…}` | pub/sub channel | — | suite relay, projector, admin API | API pods, sidecar gateway | Invalidations: membership removed, agent suspended or retired, token rotated or revoked, blocklist changed. Pods drop auth caches (≤ 5 s) and forward to sidecars. |
+| `dsp:ctl:{dsc_…}` | pub/sub channel | — | admin API | the gateway pod holding the sidecar's connection | Targeted control: a sealed new token delivered, `end_grace`, `wipe`, `config_changed`. |
