@@ -1,5 +1,7 @@
 /** Organization roles, shared across the VBCDX suite. Owners and userAdmins administer every workspace. */
 export type OrgRole = 'Owner' | 'userAdmin' | 'user'
+/** The shared seed (suite.ts, identical in Keyhole) calls it Role. */
+export type Role = OrgRole
 
 export interface Org {
   id: string
@@ -39,7 +41,7 @@ export interface AgentFilters {
 }
 
 export interface Agent {
-  id: string // public agent ID, e.g. agt_7Hq2
+  id: string // public agent ID, e.g. ag_7Hq2
   orgId: string
   label: string
   /** Reported by the agent when it connects; null until it has. Membership never depends on it. */
@@ -92,7 +94,7 @@ export interface Membership {
 }
 
 export interface Workspace {
-  id: string // public workspace ID, e.g. wks_4f1c
+  id: string // public workspace ID, e.g. ws_4f1c
   orgId: string
   name: string
   description: string
@@ -223,6 +225,11 @@ export interface AuditEvent {
   reason?: string
   detail?: [string, string][]
   link?: { label: string; to: string }
+  /**
+   * A suite-wide event about the shared organization, workspaces or players (a member added, a role change, an
+   * invite, a suspension) — Keyhole shows the same event. Everything else is Dispatch's own and never leaves it.
+   */
+  shared?: boolean
 }
 
 export interface DB {

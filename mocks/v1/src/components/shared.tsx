@@ -47,6 +47,30 @@ export function useRecordOrg(orgId: string | undefined): 'ok' | 'switching' | 'd
   return member ? 'switching' : 'denied'
 }
 
+/** A record that doesn't exist — with a hint when the link uses a pre-suite ID (agt_…, wks_…). */
+export function NotFound({ what, id, back }: { what: string; id?: string; back: { to: string; label: string } }) {
+  const legacy = id && /^(agt|wks)_/.test(id) ? id.replace(/^agt_/, 'ag_').replace(/^wks_/, 'ws_') : null
+  return (
+    <div role="alert" className="max-w-[560px] rounded-[10px] border border-edge bg-panel p-6 text-sm2 text-zinc-400">
+      <div className="text-[13px] font-semibold text-zinc-200">
+        No {what} with the ID <span className="font-mono">{id}</span>.
+      </div>
+      <div className="mt-1">
+        {legacy ? (
+          <>
+            This ID format changed: agent IDs now start with <span className="font-mono">ag_</span> and workspace IDs with <span className="font-mono">ws_</span> (they used to be <span className="font-mono">agt_</span> and <span className="font-mono">wks_</span>). Look for <span className="font-mono">{legacy}</span> in the list.
+          </>
+        ) : (
+          'It may have been deleted, or the link is mistyped.'
+        )}
+      </div>
+      <Link to={back.to} className="mt-3 inline-block">
+        {back.label} →
+      </Link>
+    </div>
+  )
+}
+
 export function NoAccess({ what, back }: { what: string; back: { to: string; label: string } }) {
   return (
     <div role="alert" className="max-w-[560px] rounded-[10px] border border-edge bg-panel p-6 text-sm2 text-zinc-400">
@@ -62,6 +86,20 @@ export function NoAccess({ what, back }: { what: string; back: { to: string; lab
 /* ------------------------------------------------------------------ */
 /* Impact preview                                                      */
 /* ------------------------------------------------------------------ */
+/** The before/after rows of an impact preview. */
+export function ImpactRows({ rows }: { rows: [string, ReactNode, ('amber' | 'red')?][] }) {
+  return (
+    <div className="flex flex-col gap-2.5 rounded-[10px] border border-edge bg-rail p-4 text-sm2">
+      {rows.map(([k, v, tone]) => (
+        <div key={k} className="flex justify-between gap-6">
+          <span className="text-zinc-500">{k}</span>
+          <span className={cx('text-right', tone === 'amber' && 'font-semibold text-amber-400', tone === 'red' && 'font-semibold text-red-400')}>{v}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, onConfirm, typeToConfirm, confirmVariant = 'danger' }: { open: boolean; onClose: () => void; title: ReactNode; rows: [string, ReactNode, ('amber' | 'red')?][]; body?: ReactNode; confirmLabel: string; onConfirm: () => void; typeToConfirm?: string; confirmVariant?: 'danger' | 'primary' }) {
   const [typed, setTyped] = useState('')
   useEffect(() => {
@@ -69,14 +107,7 @@ export function ImpactDialog({ open, onClose, title, rows, body, confirmLabel, o
   }, [open])
   return (
     <Modal open={open} onClose={onClose} width={500} title={title}>
-      <div className="flex flex-col gap-2.5 rounded-[10px] border border-edge bg-rail p-4 text-sm2">
-        {rows.map(([k, v, tone]) => (
-          <div key={k} className="flex justify-between gap-6">
-            <span className="text-zinc-500">{k}</span>
-            <span className={cx('text-right', tone === 'amber' && 'font-semibold text-amber-400', tone === 'red' && 'font-semibold text-red-400')}>{v}</span>
-          </div>
-        ))}
-      </div>
+      <ImpactRows rows={rows} />
       {body && <div className="text-sm2 leading-relaxed text-zinc-400">{body}</div>}
       {typeToConfirm && (
         <Field label={<>Type “{typeToConfirm}” to confirm</>}>
@@ -213,6 +244,7 @@ export function LogRow({ e, compact, expanded, onToggle, fresh }: { e: AuditEven
           <span className="text-zinc-600">→</span>
           <span className="truncate text-zinc-400">{e.object}</span>
           {!compact && e.wsId && <span className="shrink-0 text-xs text-zinc-600">· {wsLabel(d, e.wsId)}</span>}
+          {e.shared && <span className="shrink-0 rounded border border-signal/30 px-1.5 text-2xs text-signal-light" title="A shared suite event — about the organization, a workspace or a player. Keyhole shows it too.">Shared</span>}
         </span>
         <span className={cx('ml-auto shrink-0 whitespace-nowrap', resultTone(e))}>{e.result}</span>
         <CopyChip value={e.trk} variant="inline" />
@@ -226,7 +258,7 @@ export function LogRow({ e, compact, expanded, onToggle, fresh }: { e: AuditEven
               {e.detail.map(([k, v]) => (
                 <Fragment key={k}>
                   <span className="text-zinc-500">{k}</span>
-                  <span className={cx(/^(agt_|wks_|dsp_)/.test(v) && 'font-mono text-xs2')}>{v}</span>
+                  <span className={cx(/^(ag_|ws_|u_|org_|dsp_)/.test(v) && 'font-mono text-xs2')}>{v}</span>
                 </Fragment>
               ))}
             </div>
@@ -272,6 +304,7 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
   const [actor, setActor] = useState('')
   const [ws, setWs] = useState('')
   const [result, setResult] = useState('')
+  const [scope, setScope] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [seen] = useState(() => new Set(events.map((e) => e.id)))
   const { state, retry } = useListState()
@@ -286,15 +319,17 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
     if (type && e.type !== type) return false
     if (actor && actorKey(e) !== actor) return false
     if (ws && e.wsId !== ws) return false
+    if (scope === 'shared' && !e.shared) return false
+    if (scope === 'app' && e.shared) return false
     if (result === 'ok' && e.severity !== 'ok') return false
     if (result === 'blocked' && e.severity !== 'blocked') return false
     if (result === 'other' && (e.severity === 'ok' || e.severity === 'blocked')) return false
     return true
   })
   const exportCsv = () => {
-    const cols = ['time', 'workspace_id', 'workspace', 'type', 'severity', 'actor_kind', 'actor_id', 'actor', 'via_human_id', 'object', 'result', 'reason', 'tracking_code', 'detail']
+    const cols = ['time', 'workspace_id', 'workspace', 'scope', 'type', 'severity', 'actor_kind', 'actor_id', 'actor', 'via_human_id', 'object', 'result', 'reason', 'tracking_code', 'detail']
     const body = filtered
-      .map((e) => [new Date(e.at).toISOString(), e.wsId ?? '', wsLabel(d, e.wsId) ?? '', e.type, e.severity, e.actorKind, e.actorId ?? '', actorLabel(d, e), e.viaHumanId ?? '', e.object, e.result, e.reason ?? '', e.trk, e.detail ? JSON.stringify(Object.fromEntries(e.detail)) : ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+      .map((e) => [new Date(e.at).toISOString(), e.wsId ?? '', wsLabel(d, e.wsId) ?? '', e.shared ? 'shared' : 'dispatch', e.type, e.severity, e.actorKind, e.actorId ?? '', actorLabel(d, e), e.viaHumanId ?? '', e.object, e.result, e.reason ?? '', e.trk, e.detail ? JSON.stringify(Object.fromEntries(e.detail)) : ''].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
       .join('\n')
     const url = URL.createObjectURL(new Blob([cols.join(',') + '\n' + body], { type: 'text/csv' }))
     const a = document.createElement('a')
@@ -328,6 +363,10 @@ export function AuditLog({ events, hideWorkspaceFilter, initialQuery }: { events
             ))}
           </Filter>
         )}
+        <Filter value={scope} onChange={setScope} label="Shared or Dispatch">
+          <option value="shared">Shared (suite)</option>
+          <option value="app">Dispatch only</option>
+        </Filter>
         <Filter value={result} onChange={setResult} label="Result">
           <option value="ok">Succeeded</option>
           <option value="blocked">Blocked or rejected</option>

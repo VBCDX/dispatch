@@ -13,7 +13,9 @@ export function DemoPanel() {
     { id: 'u_ravi', label: 'Ravi Mehta', sub: 'userAdmin' },
     { id: 'u_mia', label: 'Mia Chen', sub: 'user' },
     { id: 'u_sam', label: 'Sam Ortiz', sub: 'user' },
+    { id: 'u_jo', label: 'Jo Reyes', sub: 'user' },
     { id: 'u_leo', label: 'Leo Park', sub: 'Owner' },
+    { id: 'u_noor', label: 'Noor Haddad', sub: 'userAdmin' },
   ]
     // Each persona's role in the current org, or in their own org when they aren't in this one; people in no org drop out.
     .map((p) => {

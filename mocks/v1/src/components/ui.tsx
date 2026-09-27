@@ -503,11 +503,17 @@ export function Footer({ children, className }: { children: ReactNode; className
 }
 
 /** Tiny popover menu for row actions. Arrow keys move, Escape closes and returns focus to the ⋯ button. */
-export function Menu({ items, label = 'Actions' }: { items: ({ label: string; onClick: () => void; danger?: boolean; disabled?: boolean; hint?: string } | null)[]; label?: string }) {
+export type MenuItem = { label: string; onClick: () => void; danger?: boolean; disabled?: boolean; hint?: string }
+/**
+ * A ⋯ menu. Unavailable items stay in the list, in their place, marked aria-disabled with the reason — they can be
+ * reached with the arrow keys and read, but not chosen. 'separator' divides shared items from app-specific ones.
+ */
+export function Menu({ items, label = 'Actions', disabledReason }: { items: (MenuItem | 'separator' | null)[]; label?: string; disabledReason?: string }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const btn = useRef<HTMLButtonElement>(null)
   const list = useRef<HTMLDivElement>(null)
+  const id = useId()
   const close = (refocus = true) => {
     setOpen(false)
     if (refocus) btn.current?.focus()
@@ -515,13 +521,14 @@ export function Menu({ items, label = 'Actions' }: { items: ({ label: string; on
   useLayer(open, () => close())
   useEffect(() => {
     if (!open) return
-    list.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus()
+    const first = list.current?.querySelector<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])') ?? list.current?.querySelector<HTMLElement>('[role="menuitem"]')
+    first?.focus()
     const h = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false)
     document.addEventListener('mousedown', h)
     return () => document.removeEventListener('mousedown', h)
   }, [open])
   const onKeyDown = (e: React.KeyboardEvent) => {
-    const els = Array.from(list.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [])
+    const els = Array.from(list.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])
     const i = els.indexOf(document.activeElement as HTMLElement)
     const to = e.key === 'ArrowDown' ? (i + 1) % els.length : e.key === 'ArrowUp' ? (i - 1 + els.length) % els.length : e.key === 'Home' ? 0 : e.key === 'End' ? els.length - 1 : -1
     if (e.key === 'Tab') setOpen(false)
@@ -529,32 +536,60 @@ export function Menu({ items, label = 'Actions' }: { items: ({ label: string; on
     e.preventDefault()
     els[to].focus()
   }
-  const shown = items.filter((x): x is NonNullable<typeof x> => !!x)
+  // No separator at either end or twice in a row.
+  const shown = items
+    .filter((x): x is MenuItem | 'separator' => !!x)
+    .filter((x, i, arr) => x !== 'separator' || (i > 0 && i < arr.length - 1 && arr[i - 1] !== 'separator' && arr.slice(i + 1).some((y) => y !== 'separator')))
+  // The whole menu can be unavailable: the button stays focusable, aria-disabled, and says why.
+  if (disabledReason)
+    return (
+      <span className="relative inline-block" onClick={(e) => e.stopPropagation()}>
+        <button type="button" aria-label={label} aria-disabled="true" aria-describedby={`${id}-why`} title={disabledReason} className="cursor-default rounded-md px-2 py-0.5 text-zinc-700">
+          ⋯
+        </button>
+        <span id={`${id}-why`} className="sr-only">
+          {disabledReason}
+        </span>
+      </span>
+    )
   return (
     <div ref={ref} className="relative inline-block" onClick={(e) => e.stopPropagation()}>
       <button ref={btn} type="button" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(!open)} className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-line hover:text-zinc-200">
         ⋯
       </button>
       {open && (
-        <div ref={list} role="menu" aria-label={label} onKeyDown={onKeyDown} className="absolute top-full right-0 z-30 mt-1 min-w-44 rounded-lg border border-edge bg-panel p-1 text-left shadow-xl">
-          {shown.map((it) => (
-            <button
-              key={it.label}
-              type="button"
-              role="menuitem"
-              tabIndex={-1}
-              disabled={it.disabled}
-              title={it.hint}
-              onClick={() => {
-                close()
-                it.onClick()
-              }}
-              className={cx('block w-full rounded-md px-3 py-1.5 text-left text-[13px] outline-none disabled:opacity-40', it.danger ? 'text-red-400 hover:bg-red-500/10 focus:bg-red-500/10' : 'text-zinc-300 hover:bg-line focus:bg-line')}
-            >
-              {it.label}
-              {it.disabled && it.hint && <span className="block text-2xs text-zinc-500">{it.hint}</span>}
-            </button>
-          ))}
+        <div ref={list} role="menu" aria-label={label} onKeyDown={onKeyDown} className="absolute top-full right-0 z-30 mt-1 min-w-52 rounded-lg border border-edge bg-panel p-1 text-left shadow-xl">
+          {shown.map((it, i) =>
+            it === 'separator' ? (
+              <div key={'sep' + i} role="separator" className="mx-2 my-1 h-px bg-line" />
+            ) : (
+              <button
+                key={it.label}
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                aria-disabled={it.disabled || undefined}
+                aria-describedby={it.disabled && it.hint ? `${id}-${i}` : undefined}
+                title={it.hint}
+                onClick={() => {
+                  if (it.disabled) return
+                  close()
+                  it.onClick()
+                }}
+                className={cx(
+                  'block w-full rounded-md px-3 py-1.5 text-left text-[13px] outline-none',
+                  it.disabled ? 'cursor-default text-zinc-500 focus:bg-line/60' : it.danger ? 'text-red-400 hover:bg-red-500/10 focus:bg-red-500/10' : 'text-zinc-300 hover:bg-line focus:bg-line',
+                )}
+              >
+                <span className={cx(it.disabled && 'opacity-60')}>{it.label}</span>
+                {it.disabled && it.hint && (
+                  <span id={`${id}-${i}`} className="block text-2xs text-zinc-500">
+                    {it.hint}
+                  </span>
+                )}
+              </button>
+            ),
+          )}
         </div>
       )}
     </div>

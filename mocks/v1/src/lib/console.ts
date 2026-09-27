@@ -144,7 +144,7 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
 
   /* ---------------- Agent-only flows ---------------- */
   if (!needsWs) {
-    if (ep.id === 'me') return ok(200, { id: a.id, label: a.label, client: a.client ?? null, status: a.status, filters: filtersJson(a) })
+    if (ep.id === 'me') return ok(200, { id: a.id, label: a.label, client: a.client ?? null, last_transport: a.lastTransport ? { via: a.lastTransport.via, at: iso(a.lastTransport.at) } : null, status: a.status, filters: filtersJson(a) })
     if (ep.id === 'my-workspaces') {
       const d = getDB()
       const list = d.workspaces.filter((x) => x.orgId === a.orgId && x.members.some((m) => m.kind === 'agent' && m.id === a.id))
@@ -160,17 +160,21 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
       }
       if (rw.read === false && rw.write === true) return refuse(fail(422, 'read_write_coupled', READ_WRITE_422, { field: 'write' }))
       const f = { ...a.filters, ...coupleReadWrite(a.filters, rw) }
-      for (const [k, key, kind] of [['workspace_blocklist', 'workspaceBlocklist', 'wks'], ['agent_blocklist', 'agentBlocklist', 'agt']] as const) {
+      for (const [k, key, kind] of [['workspace_blocklist', 'workspaceBlocklist', 'ws'], ['agent_blocklist', 'agentBlocklist', 'ag']] as const) {
         if (body[k] === undefined) continue
         const v = body[k]
         if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) return refuse(fail(422, 'invalid_field', `${k} must be a list of IDs.`, { field: k }))
         const d = getDB()
-        const unknown = (v as string[]).filter((id) => (kind === 'wks' ? !d.workspaces.some((w) => w.id === id && w.orgId === a.orgId) : !d.agents.some((x) => x.id === id && x.orgId === a.orgId)))
+        const unknown = (v as string[]).filter((id) => (kind === 'ws' ? !d.workspaces.some((w) => w.id === id && w.orgId === a.orgId) : !d.agents.some((x) => x.id === id && x.orgId === a.orgId)))
         if (unknown.length) return refuse(fail(422, 'unknown_ids', `Unknown IDs in ${k}: ${unknown.join(', ')}.`, { field: k }))
         f[key] = v as string[]
       }
+      // Nothing to change (an empty body, or the values it already has): no write and no "Updated filters" audit row.
+      const same = (x: string[], y: string[]) => x.length === y.length && x.every((v, i) => v === y[i])
+      const cur = a.filters
+      if (f.read === cur.read && f.write === cur.write && same(f.workspaceBlocklist, cur.workspaceBlocklist) && same(f.agentBlocklist, cur.agentBlocklist)) return ok(200, { ...filtersJson(a), changed: false })
       actions.setAgentFilters(a.id, f, by)
-      return ok(200, filtersJson(agentById(getDB(), a.id)!))
+      return ok(200, { ...filtersJson(agentById(getDB(), a.id)!), changed: true })
     }
     if (ep.id === 'heartbeat') {
       const before = getDB()
@@ -391,8 +395,9 @@ export function runConsole(req: ConsoleRequest): ConsoleResponse {
         patch[k] = body[k] as boolean
       }
       if (!Object.keys(patch).length) return refuse(fail(422, 'empty_patch', 'Send at least one of role, read, write.'))
-      if (patch.read === false && patch.write === true) return refuse(fail(422, 'read_write_coupled', READ_WRITE_422, { field: 'write' }))
+      // For a human the rule that applies is "humans always read", so it's checked before read/write coupling.
       if (m.kind === 'human' && patch.read === false) return refuse(fail(422, 'humans_always_read', 'Humans in a workspace always read every message.', { field: 'read' }))
+      if (patch.read === false && patch.write === true) return refuse(fail(422, 'read_write_coupled', READ_WRITE_422, { field: 'write' }))
       actions.setMember(wsId, p, patch, by)
       const w2 = wsById(getDB(), wsId)!
       const m2 = w2.members.find((x) => x.id === pid)!

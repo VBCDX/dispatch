@@ -5,7 +5,7 @@ import { freshDB, populatedDB } from './seed'
 import type { PersonStatus, Agent, AgentFilters, Audience, AuditEvent, Author, ContextNote, DB, FireTrigger, AgentClient, Human, Membership, MemberRole, Message, OrgRole, Principal, Webhook, Workspace } from './types'
 
 const LS_KEY = 'dispatch-mocks-v1'
-const VERSION = 7
+const VERSION = 8
 
 function load(): DB {
   try {
@@ -76,7 +76,7 @@ export const isActive = (h: Human | undefined, orgId: string) => statusIn(h, org
 export const iAmActive = (d: DB, orgId = d.currentOrgId) => isActive(me(d), orgId)
 export const isOrgAdmin = (d: DB, orgId = d.currentOrgId) => iAmActive(d, orgId) && ORG_ADMIN_ROLES.includes(me(d)?.roles[orgId] as OrgRole)
 /** Active Owners and userAdmins of the current organization. */
-export const orgAdmins = (d: DB) => d.humans.filter((h) => isActive(h, d.currentOrgId) && ORG_ADMIN_ROLES.includes(h.roles[d.currentOrgId]))
+export const orgAdmins = (d: DB, orgId = d.currentOrgId) => d.humans.filter((h) => isActive(h, orgId) && ORG_ADMIN_ROLES.includes(h.roles[orgId]))
 export const owners = (d: DB) => d.humans.filter((h) => h.roles[d.currentOrgId] === 'Owner')
 export const org = (d: DB) => d.orgs.find((o) => o.id === d.currentOrgId)
 export const agentById = (d: DB, id: string | undefined) => d.agents.find((a) => a.id === id)
@@ -123,7 +123,54 @@ export const explicitHumanAdmins = (d: DB, w: Workspace) => w.members.filter((m)
  * the organization's Owners and userAdmins are its admins by default. Agents
  * can hold admin too, but never replace the human admin.
  */
-export const defaultAdmins = (d: DB, w: Workspace) => (explicitHumanAdmins(d, w).length ? [] : orgAdmins(d))
+export const defaultAdmins = (d: DB, w: Workspace) => (explicitHumanAdmins(d, w).length ? [] : orgAdmins(d, w.orgId))
+
+/** A player's memberships in the current org's workspaces, in workspace order. */
+export const membershipsOf = (d: DB, p: Principal, orgId = d.currentOrgId) =>
+  d.workspaces.filter((w) => w.orgId === orgId).flatMap((w) => {
+    const m = w.members.find((x) => x.kind === p.kind && x.id === p.id)
+    return m ? [{ w, m }] : []
+  })
+/** The workspace Role column: Member, Workspace admin, or Default admin (org). */
+export type WorkspaceRoleLabel = 'Workspace admin' | 'Member' | 'Org admin' | 'Org admin · default workspace admin'
+/**
+ * The workspace Role column (the suite's shared vocabulary): a named workspace admin; a member; or an org admin
+ * (an active Owner or userAdmin), who administers every workspace — and is its default workspace admin when it has
+ * no named human workspace admin (rule 2). Dispatch agent admins are named workspace admins.
+ */
+export function workspaceRole(d: DB, w: Workspace, p: Principal): WorkspaceRoleLabel | null {
+  const m = w.members.find((x) => x.kind === p.kind && x.id === p.id)
+  if (m?.role === 'admin') return 'Workspace admin'
+  if (p.kind === 'human' && orgAdmins(d, w.orgId).some((h) => h.id === p.id)) return explicitHumanAdmins(d, w).length ? 'Org admin' : 'Org admin · default workspace admin'
+  return m ? 'Member' : null
+}
+/** Last active in this organization, from its own audit log ("—" when there's nothing); the same value everywhere. */
+export function lastActiveIn(d: DB, humanId: string): number | null {
+  if (humanId === d.currentUserId) return Date.now()
+  return orgEvents(d).find((e) => e.actorKind === 'human' && e.actorId === humanId)?.at ?? null
+}
+
+/**
+ * Audit rows the current person may see, scoped to the org on screen and optionally to one workspace or one
+ * player. Org admins see everything in the org; a `user` sees their own workspaces' rows and their own actions.
+ * Shared (suite) events and Dispatch's own events are both here — Keyhole's own events never are.
+ */
+export function visibleEvents(d: DB, scope: { wsId?: string; player?: Principal } = {}) {
+  const mine = new Set(myWorkspaces(d).map((w) => w.id))
+  const admin = isOrgAdmin(d)
+  return orgEvents(d).filter((e) => {
+    if (!admin && !(e.wsId && mine.has(e.wsId)) && !(e.actorKind === 'human' && e.actorId === d.currentUserId)) return false
+    if (scope.wsId && e.wsId !== scope.wsId) return false
+    if (scope.player) {
+      const { kind, id } = scope.player
+      const name = kind === 'agent' ? agentById(d, id)?.label : humanById(d, id)?.name
+      const detailId = e.detail?.some(([k, v]) => (k === 'Agent ID' || k === 'Human ID') && v === id)
+      const named = !!name && new RegExp(`(^|[^\\w-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^\\w-]|$)`).test(e.object)
+      if (!(e.actorId === id || e.viaHumanId === id || detailId || named || e.object.includes(id))) return false
+    }
+    return true
+  })
+}
 
 export const isOnline = (a: Agent) => a.status === 'active' && a.connected
 /** The client an agent reported when it last connected, e.g. "Claude Code 2.1.4 · MCP", or "Not connected yet". */
@@ -518,11 +565,18 @@ export const isLastOwner = (d: DB, h: Human) => h.roles[d.currentOrgId] === 'Own
 /** Whether the current human may change this person's org access. Only (active) Owners act on Owners; nobody on themselves. */
 export const canManageHuman = (d: DB, h: Human) => isOrgAdmin(d) && h.id !== d.currentUserId && (h.roles[d.currentOrgId] !== 'Owner' || myOrgRole(d) === 'Owner')
 
+/**
+ * Whether an event can be a Shared (suite) row. Rows must hold suite facts only, so anything an agent does as a
+ * delegated workspace admin — a Dispatch-only capability — stays a Dispatch row.
+ */
+const shareable = (by?: Actor) => by?.kind !== 'agent'
+const idRow = (p: Principal): [string, string] => [p.kind === 'agent' ? 'Agent ID' : 'Human ID', p.id]
+
 /** Logs the fallback when the last explicit human admin goes: the org's Owners and userAdmins become default admins. */
 function logDefaultAdmins(d: DB, w: Workspace, hadExplicit: boolean, by?: Actor) {
   if (!hadExplicit || explicitHumanAdmins(d, w).length) return
-  const names = orgAdmins(d).map((h) => h.name).join(', ')
-  log(d, { ...who(d, by).ev, wsId: w.id, severity: 'info', object: `${w.name} has no explicit human admin — default admins: ${names} (org Owners/userAdmins)`, result: 'Default admins', reason: 'Every workspace has at least one human admin. Agent admins keep their role but never replace the human admin.', detail: [['Explicit human admins before', 'yes'], ['After', `none — default admins ${names}`]] })
+  const names = orgAdmins(d, w.orgId).map((h) => h.name).join(', ')
+  log(d, { ...who(d, by).ev, wsId: w.id, shared: shareable(by), severity: 'info', object: `${w.name} has no explicit human admin — default admins: ${names} (org Owners/userAdmins)`, result: 'Default admins', reason: 'Every workspace has at least one human admin: without a named one, the organization’s Owners and userAdmins are its admins.', detail: [['Explicit human admins before', 'yes'], ['After', `none — default admins ${names}`]] })
 }
 
 /* ------------------------------------------------------------------ */
@@ -560,11 +614,11 @@ export const actions = {
 
   /* Workspaces */
   createWorkspace(w: { name: string; description: string; defaultExpiryHours: number | null }) {
-    const id = shortId('wks')
+    const id = shortId('ws')
     update((d) => {
       if (!iAmActive(d)) return
       d.workspaces.push({ id, orgId: d.currentOrgId, name: w.name, description: w.description, createdAt: Date.now(), members: [{ kind: 'human', id: d.currentUserId, role: 'admin', read: true, write: true, addedBy: me(d).name, addedById: d.currentUserId, addedAt: Date.now() }], agentBlocklist: [], defaultExpiryHours: w.defaultExpiryHours, retentionDays: 90 })
-      log(d, { wsId: id, object: `Created workspace ${w.name}` })
+      log(d, { wsId: id, shared: true, object: `Created workspace ${w.name}` })
     })
     return id
   },
@@ -577,7 +631,11 @@ export const actions = {
       if (!changed.length) return
       const before = changed.map((k) => `${k} ${String(w[k])}`).join(', ')
       Object.assign(w, patch)
-      log(d, { ...a.ev, wsId: id, object: `Changed ${w.name} settings · ${changed.map((k) => `${k} → ${String(w[k])}`).join(', ')}${a.asAdmin}`, detail: [['Before', before], ...a.detail] })
+      // A rename is a suite fact; expiry, retention and descriptions are Dispatch's own settings.
+      const oldName = before.match(/name (.*?)(, |$)/)?.[1]
+      if (changed.includes('name') && shareable(by)) log(d, { ...a.ev, wsId: id, shared: true, object: `Renamed workspace ${oldName} → ${w.name}`, detail: [['Workspace ID', w.id], ['Before', oldName ?? ''], ['After', w.name]] })
+      const rest = changed.filter((k) => k !== 'name' || !shareable(by))
+      if (rest.length) log(d, { ...a.ev, wsId: id, object: `Changed ${w.name} settings · ${rest.map((k) => `${k} → ${String(w[k])}`).join(', ')}${a.asAdmin}`, detail: [['Before', before], ...a.detail] })
     })
   },
   deleteWorkspace(id: string) {
@@ -596,7 +654,8 @@ export const actions = {
       d.messages = d.messages.filter((m) => m.wsId !== id)
       d.notes = d.notes.filter((n) => n.wsId !== id)
       d.deletedWorkspaces.push({ id, orgId: w.orgId, name: w.name, deletedAt: Date.now(), deletedBy: me(d).name })
-      log(d, { wsId: id, severity: 'warn', object: `Deleted workspace ${w.name}`, result: 'Deleted · audit kept', detail })
+      log(d, { wsId: id, shared: true, severity: 'warn', object: `Deleted workspace ${w.name}`, result: 'Deleted · audit kept', detail: [['Workspace ID', id]] })
+      log(d, { wsId: id, severity: 'warn', object: `Deleted ${w.name}’s Dispatch content`, result: 'Deleted', detail })
     })
   },
 
@@ -615,7 +674,13 @@ export const actions = {
         m.tokenLast4 = token.slice(-4)
       }
       w.members.push(m)
-      log(d, { ...a.ev, wsId, object: `Added ${principalName(d, p)} (${p.kind}) to ${w.name} as ${role}${p.kind === 'agent' ? ` · token ••••${m.tokenLast4}` : ''}${a.asAdmin}` })
+      // The shared row holds the suite fact only; the agent admin role and the workspace token are Dispatch's own.
+      const sharedRole = p.kind === 'agent' || role === 'member' ? 'member' : 'workspace admin'
+      log(d, { ...a.ev, wsId, shared: shareable(by), object: `Added ${principalName(d, p)} (${p.kind}) to ${w.name} as ${sharedRole}${a.asAdmin}`, detail: [idRow(p), ['Before', 'not a member'], ['After', sharedRole], ...a.detail] })
+      if (p.kind === 'agent') {
+        if (role === 'admin') log(d, { ...a.ev, wsId, object: `Delegated admin on ${w.name} to ${principalName(d, p)} (agent)${a.asAdmin}`, detail: [idRow(p), ['Before', 'member'], ['After', 'admin'], ...a.detail] })
+        log(d, { ...a.ev, wsId, object: `Issued ${principalName(d, p)}'s workspace token for ${w.name} → ••••${m.tokenLast4}${a.asAdmin}`, detail: [idRow(p), ['Read', read ? 'on' : 'off'], ['Write', write ? 'on' : 'off'], ...a.detail] })
+      }
     })
     return token
   },
@@ -634,12 +699,14 @@ export const actions = {
       if (patch.role === 'admin' && was !== 'admin') {
         m.delegatedBy = a.ev.actor
         m.delegatedById = a.ev.actorId
-        log(d, { ...a.ev, wsId, object: `Delegated admin on ${w.name} to ${principalName(d, p)} (${p.kind})${a.asAdmin}`, detail: [['Before', 'member'], ['After', 'admin'], ...a.detail] })
+        if (p.kind === 'human' && shareable(by)) log(d, { ...a.ev, wsId, shared: true, object: `Made ${principalName(d, p)} workspace admin of ${w.name}`, detail: [idRow(p), ['Before', 'member'], ['After', 'workspace admin']] })
+        else log(d, { ...a.ev, wsId, object: `Delegated admin on ${w.name} to ${principalName(d, p)} (${p.kind})${a.asAdmin}`, detail: [idRow(p), ['Before', 'member'], ['After', 'admin'], ...a.detail] })
       } else if (patch.role === 'member' && was === 'admin') {
         // Admin rights this member delegated to others stand: nothing cascades from losing admin.
         m.delegatedBy = undefined
         m.delegatedById = undefined
-        log(d, { ...a.ev, wsId, object: `Removed admin on ${w.name} from ${principalName(d, p)}${a.asAdmin}`, detail: [['Before', 'admin'], ['After', 'member'], ...a.detail] })
+        if (p.kind === 'human' && shareable(by)) log(d, { ...a.ev, wsId, shared: true, object: `Removed workspace admin from ${principalName(d, p)} in ${w.name}`, detail: [idRow(p), ['Before', 'workspace admin'], ['After', 'member']] })
+        else log(d, { ...a.ev, wsId, object: `Removed admin on ${w.name} from ${principalName(d, p)}${a.asAdmin}`, detail: [idRow(p), ['Before', 'admin'], ['After', 'member'], ...a.detail] })
       } else {
         const n = p.kind === 'agent' ? recheckReceipts(d, { wsId, agentId: p.id }) : noChange()
         log(d, { ...a.ev, wsId, object: `Changed ${principalName(d, p)}'s access in ${w.name} → ${access(m)}${a.asAdmin}`, result: `Done${recheckNote(n)}`, detail: [['Before', before], ['After', access(m)], ...a.detail] })
@@ -680,7 +747,9 @@ export const actions = {
       w.members = w.members.filter((x) => x !== m)
       const n = p.kind === 'agent' ? recheckReceipts(d, { wsId, agentId: p.id }) : noChange()
       result = n
-      log(d, { ...a.ev, wsId, object: `Removed ${principalName(d, p)} from ${w.name}${p.kind === 'agent' ? ' — its workspace token stops working now' : ''}${a.asAdmin}`, result: `Done${recheckNote(n)}`, detail: [['Before', `${m.role} · ${m.read ? 'read' : ''}${m.write ? ' + write' : ''}`], ['After', 'not a member'], ...a.detail] })
+      const was = m.role === 'admin' && p.kind === 'human' ? 'workspace admin' : 'member'
+      log(d, { ...a.ev, wsId, shared: shareable(by), object: `Removed ${principalName(d, p)} (${p.kind}) from ${w.name}${a.asAdmin}`, detail: [idRow(p), ['Before', was], ['After', 'not a member'], ...a.detail] })
+      if (p.kind === 'agent') log(d, { ...a.ev, wsId, object: `${principalName(d, p)}'s workspace token for ${w.name} stopped working${a.asAdmin}`, result: `Done${recheckNote(n)}`, detail: [idRow(p), ['Before', `${m.role} · ${[m.read && 'read', m.write && 'write'].filter(Boolean).join(' + ') || 'no access'} · ••••${m.tokenLast4}`], ['After', 'not a member'], ...a.detail] })
       logDefaultAdmins(d, w, hadExplicit, by)
     })
     return result
@@ -704,12 +773,12 @@ export const actions = {
   /* Agents */
   createAgent(a: { label: string; description: string }) {
     const token = newAgentToken()
-    const id = shortId('agt')
+    const id = shortId('ag')
     sessionSecrets.set(`agent:${id}`, token)
     update((d) => {
       if (!isOrgAdmin(d) || labelTaken(d, a.label)) return
       d.agents.push({ id, orgId: d.currentOrgId, label: a.label, client: null, description: a.description, tokenLast4: token.slice(-4), status: 'active', createdAt: Date.now(), createdBy: me(d).name, createdById: d.currentUserId, lastSeen: null, connected: false, filters: { read: true, write: true, workspaceBlocklist: [], agentBlocklist: [] } })
-      log(d, { object: `Registered agent ${a.label} · ${id}` })
+      log(d, { shared: true, object: `Registered agent ${a.label} · ${id}` })
     })
     return { id, token }
   },
@@ -755,10 +824,13 @@ export const actions = {
       const changed: { read?: boolean; write?: boolean } = {}
       if (f.read !== a.filters.read) changed.read = f.read
       if (f.write !== a.filters.write) changed.write = f.write
-      a.filters = { ...f, ...coupleReadWrite(a.filters, changed) }
+      const next = { ...f, ...coupleReadWrite(a.filters, changed) }
+      // A no-op save writes nothing and logs nothing.
+      if (show(next) === before) return
+      a.filters = next
       const n = recheckReceipts(d, { agentId: id })
       const w = who(d, by)
-      log(d, { orgId: a.orgId,  ...w.ev, detail: [['Agent ID', a.id], ['Before', before], ['After', show(f)], ...w.detail], object: `Updated ${a.label}'s own filters · read ${f.read ? 'on' : 'off'} · write ${f.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${recheckNote(n)}` })
+      log(d, { orgId: a.orgId,  ...w.ev, detail: [['Agent ID', a.id], ['Before', before], ['After', show(next)], ...w.detail], object: `Updated ${a.label}'s own filters · read ${next.read ? 'on' : 'off'} · write ${next.write ? 'on' : 'off'} · ${f.workspaceBlocklist.length} blocked workspaces · ${f.agentBlocklist.length} blocked agents`, result: `Done${recheckNote(n)}` })
     })
   },
   renameAgent(id: string, label: string) {
@@ -767,7 +839,7 @@ export const actions = {
       if (!a || !isOrgAdmin(d, a.orgId) || !label.trim() || d.agents.some((x) => x.orgId === a.orgId && x.id !== id && x.label.toLowerCase() === label.trim().toLowerCase())) return
       const old = a.label
       a.label = label.trim()
-      log(d, { orgId: a.orgId,  object: `Renamed agent ${old} → ${a.label} · ${a.id}` })
+      log(d, { orgId: a.orgId, shared: true, object: `Renamed agent ${old} → ${a.label} · ${a.id}` })
     })
   },
   /** Prototype: the agent opens its MCP session / starts polling. Queued messages get delivered. */
@@ -808,7 +880,9 @@ export const actions = {
   },
 
   /* People */
-  inviteHuman(email: string, role: OrgRole) {
+  /** Invites someone with an org role and, optionally, workspaces (with a role in each) — the shared Invite user dialog. */
+  inviteHuman(email: string, role: OrgRole, workspaces: Record<string, MemberRole> = {}) {
+    let invitedId: string | null = null
     update((d) => {
       if (!isOrgAdmin(d) || emailTaken(d, email)) return
       // Someone already in another organization is the same person: they gain a membership here, invited.
@@ -816,19 +890,48 @@ export const actions = {
       if (existing) {
         existing.roles[d.currentOrgId] = role
         existing.orgStatus = { ...existing.orgStatus, [d.currentOrgId]: 'invited' }
-      } else d.humans.push({ id: uid('u'), name: email.split('@')[0].replace(/^./, (c) => c.toUpperCase()), email, roles: { [d.currentOrgId]: role }, orgStatus: { [d.currentOrgId]: 'invited' }, lastActive: null, sessions: [] })
-      log(d, { object: `Invited ${email} as ${role}` })
+        invitedId = existing.id
+      } else {
+        invitedId = uid('u')
+        d.humans.push({ id: invitedId, name: email.split('@')[0].replace(/^./, (c) => c.toUpperCase()), email, roles: { [d.currentOrgId]: role }, orgStatus: { [d.currentOrgId]: 'invited' }, lastActive: null, sessions: [] })
+      }
+      const ws = Object.keys(workspaces).map((id) => wsById(d, id)).filter((w): w is Workspace => !!w && w.orgId === d.currentOrgId)
+      log(d, { shared: true, object: `Invited ${email} as ${role}${ws.length ? ` · ${ws.map((w) => `${w.name}${workspaces[w.id] === 'admin' ? ' (admin)' : ''}`).join(', ')}` : ''}` })
     })
+    // Each workspace membership is added (and audited) in its own workspace; it takes effect when they accept.
+    if (invitedId) for (const [wsId, r] of Object.entries(workspaces)) actions.addMember(wsId, { kind: 'human', id: invitedId }, r, true, true)
   },
 
+  /** Sends a pending invitation again. */
+  resendInvite(humanId: string) {
+    update((d) => {
+      const h = humanById(d, humanId)
+      if (!h || !isOrgAdmin(d) || statusIn(h, d.currentOrgId) !== 'invited') return
+      log(d, { shared: true, object: `Resent invite to ${h.email}`, detail: [['Human ID', h.id]] })
+    })
+  },
+  /** Withdraws a pending invitation: the invitee's role here and any workspace memberships waiting for them go. */
+  revokeInvite(humanId: string) {
+    update((d) => {
+      const h = humanById(d, humanId)
+      if (!h || !isOrgAdmin(d) || statusIn(h, d.currentOrgId) !== 'invited') return
+      const ws = d.workspaces.filter((w) => w.orgId === d.currentOrgId && w.members.some((m) => m.kind === 'human' && m.id === h.id))
+      for (const w of ws) w.members = w.members.filter((m) => !(m.kind === 'human' && m.id === h.id))
+      delete h.roles[d.currentOrgId]
+      delete h.orgStatus[d.currentOrgId]
+      if (h.suspendedFrom) delete h.suspendedFrom[d.currentOrgId]
+      log(d, { shared: true, severity: 'warn', object: `Revoked invite for ${h.email}`, detail: [['Human ID', h.id], ['Workspaces waiting for them', ws.map((w) => w.name).join(', ') || 'none']] })
+    })
+  },
   /** user ↔ userAdmin. An Owner's role changes only by transferring ownership. */
   setOrgRole(humanId: string, role: 'userAdmin' | 'user') {
     update((d) => {
       const h = humanById(d, humanId)
       const cur = h?.roles[d.currentOrgId]
-      if (!h || !cur || cur === role || cur === 'Owner' || !canManageHuman(d, h)) return
+      // An Owner's role changes only by an Owner, and never the last active Owner's (rule 1).
+      if (!h || !cur || cur === role || !canManageHuman(d, h) || isLastOwner(d, h)) return
       h.roles[d.currentOrgId] = role
-      log(d, { object: `Changed ${h.name}'s org role ${cur} → ${role}`, detail: [['Human ID', h.id], ['Before', cur], ['After', role]] })
+      log(d, { shared: true, object: `Changed ${h.name}'s org role ${cur} → ${role}`, detail: [['Human ID', h.id], ['Before', cur], ['After', role]] })
     })
   },
   /** Makes someone else Owner; the current Owner becomes a userAdmin. */
@@ -842,7 +945,7 @@ export const actions = {
       const before = to.roles[d.currentOrgId]
       to.roles[d.currentOrgId] = 'Owner'
       from.roles[d.currentOrgId] = 'userAdmin'
-      log(d, { severity: 'warn', object: `Transferred ownership of ${o.name} to ${to.name}`, result: `${from.name} is now a userAdmin`, detail: [['From', `${from.name} (${from.id}) · Owner → userAdmin`], ['To', `${to.name} (${to.id}) · ${before} → Owner`]] })
+      log(d, { shared: true, severity: 'warn', object: `Transferred ownership of ${o.name} to ${to.name}`, result: `${from.name} is now a userAdmin`, detail: [['From', `${from.name} (${from.id}) · Owner → userAdmin`], ['To', `${to.name} (${to.id}) · ${before} → Owner`]] })
     })
   },
   /** Suspending a person stops what they can do next. Nothing they created or granted changes. */
@@ -869,7 +972,7 @@ export const actions = {
       // Suspending the only active explicit human admin of a workspace hands it to the default admins.
       if (status === 'suspended') for (const w of lastIn) logDefaultAdmins(d, w, true)
       const f = humanFootprint(d, h)
-      log(d, { severity: status === 'suspended' ? 'warn' : 'info', object: `${status === 'suspended' ? 'Suspended' : 'Resumed'} ${h.name}`, result: status === 'suspended' ? `Unaffected: ${f.agents.length} agents they registered, ${f.delegations.length} admin delegations` : after === 'invited' ? 'Back to invited — still has to accept' : 'Done', detail: [['Human ID', h.id], ['Before', before], ['After', after]] })
+      log(d, { shared: true, severity: status === 'suspended' ? 'warn' : 'info', object: `${status === 'suspended' ? 'Suspended' : 'Resumed'} ${h.name}`, result: status === 'suspended' ? `Unaffected: ${f.agents.length} agents they registered` : after === 'invited' ? 'Back to invited — still has to accept' : 'Done', detail: [['Human ID', h.id], ['Before', before], ['After', after]] })
     })
   },
   /** The current person accepts their invitation to the current organization. Only then do they get any access. */
@@ -879,7 +982,7 @@ export const actions = {
       const o = org(d)
       if (!u || !o || statusIn(u, d.currentOrgId) !== 'invited') return
       u.orgStatus = { ...u.orgStatus, [d.currentOrgId]: 'active' }
-      log(d, { object: `${u.name} accepted the invitation to ${o.name}`, detail: [['Human ID', u.id], ['Before', 'invited'], ['After', 'active']] })
+      log(d, { shared: true, object: `${u.name} accepted the invitation to ${o.name}`, detail: [['Human ID', u.id], ['Before', 'invited'], ['After', 'active']] })
     })
   },
   /**
@@ -901,18 +1004,20 @@ export const actions = {
         logDefaultAdmins(d, w, hadExplicit.get(w.id) ?? false)
       }
       log(d, {
+        shared: true,
         severity: 'warn',
         object: `Removed ${h.name} from ${org(d)?.name}`,
-        result: `Unaffected: ${f.agents.length} agents, ${f.delegations.length} delegations, ${f.messages} messages`,
-        reason: 'Losing permission doesn’t undo what was already done. Agents belong to the organization; delegated admin rights stand.',
+        result: `Unaffected: ${f.agents.length} agents they registered`,
+        reason: 'Losing permission doesn’t undo what was already done. Agents belong to the organization.',
         detail: [
           ['Human ID', h.id],
           ['Before', `${role} · member of ${f.memberships.map((w) => w.name).join(', ') || 'no workspaces'}`],
           ['After', 'not in the organization'],
           ['Agents they registered', f.agents.map((a) => a.label).join(', ') || 'none'],
-          ['Delegations that stand', f.delegations.map(({ w, m }) => `${principalName(d, m)} on ${w.name}`).join(', ') || 'none'],
         ],
       })
+      // What stays in Dispatch — admin rights they delegated (agents included) and their messages — is Dispatch's own row.
+      log(d, { object: `${h.name}'s Dispatch activity stays after removal`, result: `${f.delegations.length} delegations stand · ${f.messages} messages stay`, detail: [['Human ID', h.id], ['Delegations that stand', f.delegations.map(({ w, m }) => `${principalName(d, m)} on ${w.name}`).join(', ') || 'none']] })
     })
   },
 
@@ -1120,7 +1225,32 @@ export const actions = {
       if (!iAmActive(d) || !name.trim() || u.name === name.trim()) return
       const old = u.name
       u.name = name.trim()
-      log(d, { object: `Renamed themselves ${old} → ${u.name}`, detail: [['Human ID', u.id]] })
+      log(d, { shared: true, object: `Renamed themselves ${old} → ${u.name}`, detail: [['Human ID', u.id]] })
+    })
+  },
+  /**
+   * Deletes the organization on screen (Owners only): its workspaces with their messages and context, its agents and
+   * their tokens, and everyone's membership in it. Other organizations are untouched; you land in another of yours.
+   */
+  deleteOrg() {
+    update((d) => {
+      const o = org(d)
+      if (!o || !iAmActive(d) || myOrgRole(d) !== 'Owner') return
+      const ws = new Set(d.workspaces.filter((w) => w.orgId === o.id).map((w) => w.id))
+      d.messages = d.messages.filter((m) => !ws.has(m.wsId))
+      d.notes = d.notes.filter((n) => !ws.has(n.wsId))
+      d.workspaces = d.workspaces.filter((w) => w.orgId !== o.id)
+      d.deletedWorkspaces = d.deletedWorkspaces.filter((w) => w.orgId !== o.id)
+      for (const a of d.agents) if (a.orgId === o.id) for (const k of [`agent:${a.id}`, `agent-prev:${a.id}`]) sessionSecrets.delete(k)
+      d.agents = d.agents.filter((a) => a.orgId !== o.id)
+      d.events = d.events.filter((e) => e.orgId !== o.id)
+      for (const h of d.humans) {
+        delete h.roles[o.id]
+        delete h.orgStatus[o.id]
+        if (h.suspendedFrom) delete h.suspendedFrom[o.id]
+      }
+      d.orgs = d.orgs.filter((x) => x.id !== o.id)
+      d.currentOrgId = Object.keys(me(d).roles)[0] ?? ''
     })
   },
   renameOrg(name: string) {
@@ -1129,7 +1259,7 @@ export const actions = {
       if (!o || !isOrgAdmin(d) || !name.trim() || o.name === name.trim()) return
       const old = o.name
       o.name = name.trim()
-      log(d, { object: `Renamed organization ${old} → ${o.name}`, detail: [['Org ID', o.id]] })
+      log(d, { shared: true, object: `Renamed organization ${old} → ${o.name}`, detail: [['Org ID', o.id]] })
     })
   },
 }

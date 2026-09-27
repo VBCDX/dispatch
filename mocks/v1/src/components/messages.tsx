@@ -141,6 +141,7 @@ export function MessageCard({ m, onOpen, thread, onTag, activeTags }: { m: Messa
           <Tag key={t} t={t} on={activeTags?.includes(t)} onClick={onTag ? () => onTag(t) : undefined} />
         ))}
         <WebhookBadge m={m} />
+        {thread && <ReplyHooksBadge m={m} thread={thread} />}
         <span className={cx('text-xs', expired ? 'text-zinc-500' : soon ? 'text-amber-400' : 'text-zinc-500')}>{m.expiresAt ? (expired ? 'Expired' : `Expires ${until(m.expiresAt, now).toLowerCase()}`) : 'No expiry'}</span>
         <span className="ml-auto flex items-center gap-3">
           <CopyChip value={m.trk} />
@@ -159,6 +160,20 @@ export function MessageCard({ m, onOpen, thread, onTag, activeTags }: { m: Messa
       )}
       {thread && <ThreadBlock m={m} thread={thread} now={now} />}
     </article>
+  )
+}
+
+/** On the card, a summary of webhooks that live on replies — so a thread shows it carries one even when collapsed. */
+function ReplyHooksBadge({ m, thread }: { m: Message; thread: ThreadView }) {
+  const hooks = descendants(m.id, thread.childrenOf).filter((r) => r.webhook)
+  if (!hooks.length) return null
+  const listen = hooks.filter((r) => r.webhook!.mode === 'listen').length
+  const fire = hooks.length - listen
+  const parts = [fire && `${fire} fire`, listen && `${listen} listening`].filter(Boolean).join(' · ')
+  return (
+    <button type="button" onClick={() => thread.onOpenReply(hooks[0].id)} title={`Open ${hooks[0].id}, the first reply with a webhook`} className="rounded-full">
+      <Pill tone="blue">↳ reply webhook{hooks.length > 1 ? 's' : ''} · {parts}</Pill>
+    </button>
   )
 }
 
