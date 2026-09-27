@@ -1228,6 +1228,31 @@ export const actions = {
       log(d, { shared: true, object: `Renamed themselves ${old} → ${u.name}`, detail: [['Human ID', u.id]] })
     })
   },
+  /**
+   * Deletes the organization on screen (Owners only): its workspaces with their messages and context, its agents and
+   * their tokens, and everyone's membership in it. Other organizations are untouched; you land in another of yours.
+   */
+  deleteOrg() {
+    update((d) => {
+      const o = org(d)
+      if (!o || !iAmActive(d) || myOrgRole(d) !== 'Owner') return
+      const ws = new Set(d.workspaces.filter((w) => w.orgId === o.id).map((w) => w.id))
+      d.messages = d.messages.filter((m) => !ws.has(m.wsId))
+      d.notes = d.notes.filter((n) => !ws.has(n.wsId))
+      d.workspaces = d.workspaces.filter((w) => w.orgId !== o.id)
+      d.deletedWorkspaces = d.deletedWorkspaces.filter((w) => w.orgId !== o.id)
+      for (const a of d.agents) if (a.orgId === o.id) for (const k of [`agent:${a.id}`, `agent-prev:${a.id}`]) sessionSecrets.delete(k)
+      d.agents = d.agents.filter((a) => a.orgId !== o.id)
+      d.events = d.events.filter((e) => e.orgId !== o.id)
+      for (const h of d.humans) {
+        delete h.roles[o.id]
+        delete h.orgStatus[o.id]
+        if (h.suspendedFrom) delete h.suspendedFrom[o.id]
+      }
+      d.orgs = d.orgs.filter((x) => x.id !== o.id)
+      d.currentOrgId = Object.keys(me(d).roles)[0] ?? ''
+    })
+  },
   renameOrg(name: string) {
     update((d) => {
       const o = org(d)

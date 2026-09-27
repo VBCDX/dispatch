@@ -43,7 +43,7 @@ function OrgGate() {
         <div className="flex items-center gap-2.5">
           <DispatchMark size={20} />
           <div className="text-[15px] font-semibold">
-            {status === 'invited' ? `You’ve been invited to ${o?.name}` : status === 'suspended' ? `You’re suspended in ${o?.name}` : `You’re not a member of ${o?.name}`}
+            {!o ? 'You’re not in any organization' : status === 'invited' ? `You’ve been invited to ${o.name}` : status === 'suspended' ? `You’re suspended in ${o.name}` : `You’re not a member of ${o.name}`}
           </div>
         </div>
         <div className="mt-2 text-sm2 leading-relaxed text-zinc-400">

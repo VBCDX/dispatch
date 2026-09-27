@@ -72,7 +72,9 @@ Keyhole.
 - **Navigation** follows the suite's order: Home, Organizations, Workspaces, *Search* (Dispatch), Players › Users and
   Agents, *Developers › API & MCP* (Dispatch), Audit, Settings. The org switcher is the same dropdown in both apps.
 - **Organizations** has the shared tabs: Overview, Members (the Users grid), Agents, Workspaces and Audit. Member
-  counts leave out pending invites.
+  counts leave out pending invites. Overview has the same actions, in the same order, as Keyhole: *Rename organization…* (org
+  admins), *Manage members*, *Transfer ownership…* and *Delete organization…* (Owners; type the name, with a preview of
+  the workspaces, messages and agents that go).
 - **Players › Users** has the same columns in both apps (Name, Email, Org role, Status, Last active in this org,
   Workspaces — "(admin)" after workspace-admin memberships, "+N" past three, *All (org admin)* for active Owners and
   userAdmins; Last active is the same value on the grid and the person's page, from the org's audit log, "—" when

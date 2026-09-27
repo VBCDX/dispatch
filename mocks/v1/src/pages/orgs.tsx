@@ -5,9 +5,9 @@
 import { useState } from 'react'
 import { Link, Outlet, useNavigate, useParams } from 'react-router-dom'
 import { ago, plural } from '../lib/format'
-import { activeOwners, isActive, isOrgAdmin, isOnline, me, myWorkspaces, org, orgAgents, orgHumans, owners, statusIn, useDB, useNow, visibleEvents } from '../lib/store'
-import { AuditLog, ListBody, NoAccess } from '../components/shared'
-import { Breadcrumb, Button, Callout, Card, PageTitle, Row, Table, Tabs } from '../components/ui'
+import { actions, activeOwners, iAmActive, isActive, myOrgRole, isOrgAdmin, isOnline, me, myWorkspaces, org, orgAgents, orgHumans, owners, statusIn, useDB, useNow, visibleEvents } from '../lib/store'
+import { AuditLog, ImpactDialog, ImpactRows, ListBody, NoAccess } from '../components/shared'
+import { Breadcrumb, Button, Callout, Card, Field, Footer, Input, Modal, PageTitle, Row, Select, Table, Tabs } from '../components/ui'
 import { AgentsGrid, InviteUserModal, UsersGrid } from './grids'
 import { WorkspacesTable } from './workspaces'
 
@@ -83,7 +83,13 @@ export function OrgDetail() {
 export function OrgOverview() {
   const d = useDB()
   const now = useNow()
+  const nav = useNavigate()
   const o = org(d)!
+  const [renaming, setRenaming] = useState(false)
+  const [transferring, setTransferring] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const owner = iAmActive(d) && myOrgRole(d) === 'Owner'
+  const orgWs = d.workspaces.filter((w) => w.orgId === o.id)
   const all = owners(d)
   const counts: [string, string | number, string][] = [
     ['Members', orgHumans(d).filter((h) => statusIn(h, o.id) !== 'invited').length, 'members'],
@@ -118,17 +124,120 @@ export function OrgOverview() {
         <span className="text-zinc-500">Shared with Keyhole</span>
         <span className="text-zinc-400">People, org roles, workspaces, workspace memberships and agent records. Messages, context, webhooks and Dispatch tokens stay in Dispatch.</span>
       </Card>
-      {isOrgAdmin(d) && (
-        <div className="mt-4 flex gap-2">
-          <Link to="/settings/account">
-            <Button>Rename organization</Button>
-          </Link>
-          <Link to={`/orgs/${o.id}/members`}>
-            <Button>Manage members</Button>
-          </Link>
-        </div>
-      )}
+      {/* The same actions, in the same order, as Keyhole's Overview. */}
+      <div className="mt-4 flex flex-wrap gap-2">
+        {isOrgAdmin(d) && <Button onClick={() => setRenaming(true)}>Rename organization…</Button>}
+        <Link to={`/orgs/${o.id}/members`}>
+          <Button>Manage members</Button>
+        </Link>
+        {owner && <Button onClick={() => setTransferring(true)}>Transfer ownership…</Button>}
+        {owner && (
+          <Button variant="danger" onClick={() => setDeleting(true)}>
+            Delete organization…
+          </Button>
+        )}
+      </div>
+      {renaming && <RenameOrg onClose={() => setRenaming(false)} />}
+      {transferring && <TransferOwnership onClose={() => setTransferring(false)} />}
+      <ImpactDialog
+        open={deleting}
+        onClose={() => setDeleting(false)}
+        title={`Delete ${o.name}?`}
+        typeToConfirm={o.name}
+        rows={[
+          ['Workspaces', `${orgWs.length} — ${orgWs.map((w) => w.name).join(', ') || 'none'}`, 'red'],
+          ['Messages', `${d.messages.filter((m) => orgWs.some((w) => w.id === m.wsId)).length} — deleted with their receipts, webhooks and context`, 'red'],
+          ['Agents', `${orgAgents(d).length} — their agent and workspace tokens stop working now`, 'amber'],
+          ['Members', `${orgHumans(d).length} lose access — their other organizations aren’t affected`],
+          ['Audit log', 'Deleted with the organization'],
+        ]}
+        body="This can’t be undone. Keyhole shares this organization: deleting it removes it across the suite."
+        confirmLabel="Delete organization"
+        onConfirm={() => {
+          actions.deleteOrg()
+          nav('/')
+        }}
+      />
     </div>
+  )
+}
+
+function RenameOrg({ onClose }: { onClose: () => void }) {
+  const d = useDB()
+  const o = org(d)!
+  const [name, setName] = useState(o.name)
+  return (
+    <Modal open onClose={onClose} width={420} title="Rename organization">
+      <Field label="Name">
+        <Input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+      </Field>
+      <Footer>
+        <Button size="lg" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          size="lg"
+          variant="primary"
+          disabled={!name.trim() || name.trim() === o.name}
+          onClick={() => {
+            actions.renameOrg(name)
+            onClose()
+          }}
+        >
+          Rename
+        </Button>
+      </Footer>
+    </Modal>
+  )
+}
+
+/** Transfer ownership…: pick an active person who isn't an Owner; you become a userAdmin. */
+function TransferOwnership({ onClose }: { onClose: () => void }) {
+  const d = useDB()
+  const o = org(d)!
+  const candidates = orgHumans(d).filter((h) => h.id !== d.currentUserId && h.roles[o.id] !== 'Owner' && isActive(h, o.id))
+  const [to, setTo] = useState(candidates[0]?.id ?? '')
+  const h = candidates.find((x) => x.id === to)
+  return (
+    <Modal open onClose={onClose} width={480} title={`Transfer ownership of ${o.name}`}>
+      {candidates.length ? (
+        <Field label="New Owner">
+          <Select value={to} onChange={(e) => setTo(e.target.value)}>
+            {candidates.map((x) => (
+              <option key={x.id} value={x.id}>
+                {x.name} · {x.roles[o.id]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      ) : (
+        <div className="text-sm2 text-zinc-400">No one else is active in {o.name} yet.</div>
+      )}
+      {h && (
+        <ImpactRows
+          rows={[
+            [h.name, `${h.roles[o.id]} → Owner`, 'amber'],
+            ['You', 'Owner → userAdmin — you keep administering every workspace'],
+          ]}
+        />
+      )}
+      <Footer>
+        <Button size="lg" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          size="lg"
+          variant="danger"
+          disabled={!h}
+          onClick={() => {
+            actions.transferOwnership(to)
+            onClose()
+          }}
+        >
+          Transfer ownership
+        </Button>
+      </Footer>
+    </Modal>
   )
 }
 
