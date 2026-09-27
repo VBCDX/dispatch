@@ -47,6 +47,53 @@ Keyhole and Dispatch follow the same permission rules. Where a rule plays out di
 
 ---
 
+## Shared with Keyhole
+
+Dispatch and [Keyhole](https://github.com/VBCDX/keyhole/tree/main/mocks/v1) share one set of organizations,
+workspaces and players, and the screens that manage them look and work the same in both apps. App-specific features
+stay in their own app: messages, context and webhooks exist only in Dispatch; stores, keys, tools and connectors only in
+Keyhole.
+
+- **One seed, one file.** [`src/lib/suite.ts`](src/lib/suite.ts) is identical in both repos. It holds the
+  organizations (`org_acme` Acme Corp, `org_nw` Northwind Labs), the users (`u_dana` Dana Keller, Owner; `u_ravi` Ravi
+  Mehta, userAdmin; `u_mia` Mia Chen, user in both orgs; `u_sam` Sam Ortiz, a pending invite; `u_jo` Jo Reyes,
+  suspended in Acme; `u_leo` Leo Park, Northwind Owner; `u_noor` Noor Haddad, Northwind userAdmin), the workspaces
+  (`ws_prod` Production, `ws_staging` Staging, `ws_sandbox` Sandbox, `ws_incidents` Incidents, and Northwind's
+  `ws_docs` Docs site) with who is in each and as what, and the agent records (`ag_…`, with label and *created by*).
+- **Public IDs** use the suite prefixes `ag_`, `ws_`, `u_` and `org_` (Dispatch used to use `agt_` and `wks_`).
+- **What Dispatch layers on top**, and keeps to itself: per-membership Read/Write, blocklists on both sides, agent
+  workspace admins (planner in Production), workspace tokens (`dsp_ws_…`) and agent tokens (`dsp_agent_…`, where
+  Keyhole has `kh_live_…`), the client an agent reports, and agent states — in Dispatch triage-bot and reporting-bot
+  are suspended, old-ci is revoked, Incidents blocks web-scraper and docs-agent blocks Staging on its own side.
+  Release train's content now lives in Production.
+- **Navigation** follows the suite's order: Home, Organizations, Workspaces, *Search* (Dispatch), Players › Users and
+  Agents, *Developers › API & MCP* (Dispatch), Audit, Settings. The org switcher is the same dropdown in both apps.
+- **Organizations** has the shared tabs: Overview, Members (the Users grid), Agents, Workspaces and Audit.
+- **Players › Users** has the same columns in both apps (Name, Email, Org role, Status, Last active in this org,
+  Workspaces — "(admin)" after workspace-admin memberships, "+N" past three, *All (org admin)* for active Owners and
+  userAdmins) and the same ⋯ menu: *Change org role…*, *Assign workspaces…*, *Transfer ownership…*, *Suspend…* /
+  *Resume…*, *Remove from organization…*. Unavailable items stay in place, `aria-disabled`, with the reason.
+  **Assign workspaces…** lists the org's workspaces with a checkbox and *Member / Workspace admin* each, plus
+  Dispatch's Read and Write (coupled; humans always read), previews what's added, removed and changed and which default
+  admins take over, and then applies each change in its workspace — the same audit rows the workspace's own Members tab
+  writes. It's how an org admin makes a regular user a workspace admin. **Invite user** takes an email, an org role and
+  workspaces with a role.
+- **Players › Agents** has the shared columns (Label, Agent ID, Status, Token, Created, Last used, Workspaces), then
+  Dispatch's *Reported client* and *Own filters*. Its ⋯ menu is *Assign workspaces…*, *Rotate token…*, *Suspend…* /
+  *Resume…*, *Revoke…*, then Dispatch's own items after a separator. Assigning an agent to workspaces issues one
+  workspace token per newly added workspace, each shown once.
+- **Workspace › Members** is the same two grids filtered to the workspace, with a Role column: *Member*, *Workspace
+  admin*, or *Default admin (org)* (rule 2). Dispatch adds each membership's Read/Write and workspace token. Workspace
+  admins manage their own workspace there — add, remove, delegate workspace admin — and agent admins do the same over
+  the API; org-level items in the same menus are disabled for them.
+- **Audit is context-aware.** The Audit page, an organization's Audit tab, a workspace's Audit tab and a player's
+  page show Dispatch's own events plus the suite's shared events (organization, workspace and player changes: members
+  added or removed, role changes, invites, suspensions, agents registered or renamed), which carry a **Shared** badge
+  and can be filtered on. Agent suspend, revoke and rotate are per app, so they aren't shared; Keyhole's own events
+  never appear here. A `user` sees only their own workspaces and their own actions.
+
+---
+
 ## The model in one page
 
 ### Workspaces are permission spaces
@@ -63,13 +110,13 @@ humans are members of workspaces in the same way.
   blocklist, rotate tokens, expire messages, read the audit log. The audit log marks each of those actions as an
   agent action (`planner … — as delegated admin`).
 - **Every workspace has at least one human admin.** When no human is admin of a workspace explicitly, the
-  organization's Owners and userAdmins are its **default admins**: the Members tab lists them as *Default admin (org
-  Owner/userAdmin)*; they can't be removed there and aren't counted as members. Demoting or removing the last explicit
+  organization's Owners and userAdmins are its **default admins**: the Members tab lists them with the role *Default admin
+  (org)*; they can't be removed there and aren't counted as members. Demoting or removing the last explicit
   human admin — by a person, or by an agent admin over the API — is allowed; the preview names who becomes default
   admin, the audit log records the fallback, and the API response lists them in `default_admins`. Agent admins keep
   their role but never replace the human admin.
 - Organization roles are **Owner**, **userAdmin** and **user**. The last active Owner can't be removed, suspended or
-  demoted; **People › Transfer ownership** hands it on (never offered to someone who is already an Owner).
+  demoted; **Players › Users › ⋯ › Transfer ownership…** hands it on (never offered to someone who is already an Owner).
 - **Only active people count.** Last-Owner protection, a workspace's human admin and its default admins count only
   active people: a suspended explicit admin hands the workspace to the default admins, and default-admin previews list
   only active org admins.
@@ -77,17 +124,17 @@ humans are members of workspaces in the same way.
   *You're suspended in <org>* with links to their other organizations. Resume puts them back in the state they had
   before — an invitee stays invited.
 - **Invitees see only the invitation.** Until they accept, invited people get no access to the organization — no
-  People, Agents, Audit or workspaces — just the invitation to accept.
+  Players, Audit or workspaces — just the invitation to accept.
 - **Suspension is per organization.** It's stored on the person's membership in one organization, checked only there,
   and logged only there. Suspended in one org, a person keeps working in any other; resuming them in one org never
   touches another. The organization switcher — the org box at the top of the sidebar, a dropdown — lists your orgs with your role, marks
   the ones where you're suspended or invited (invitations in their own *Pending invitations* group), checks the current
   one, and lands on the chosen org's Home. The suspended/invited gate uses the same switcher. The populated scenario
-  has a second organization, **Northwind Labs** (Owner: Leo Park), where Mia is also a user.
+  has a second organization, **Northwind Labs** (Owner: Leo Park; userAdmin: Noor Haddad), where Mia is also a user.
 - **Records belong to their organization.** A workspace, agent or message opened by ID resolves its own org: if you
   belong to that org, Dispatch switches to it (so its suspended gate and your roles there apply); otherwise you get
   *You don't have access to this …*. Permission checks and audit rows use the record's org, and the API console only
-  offers the current org's agents and workspaces. People can be made userAdmin or user, suspended and removed, each
+  offers the current org's agents and workspaces. On Players › Users, people can be made userAdmin or user, suspended and removed, each
   behind a preview that says what stays: agents they registered keep working (agents belong to the organization;
   *registered by* is audit only), admin rights they delegated stand, and their messages stay under their name.
   Creator fields (*registered by*, *added by*, *delegated by*) are permanent audit fields and never grant rights —
@@ -194,7 +241,8 @@ the last one learned. **Search** covers messages, payloads, tags, message IDs, t
 every workspace you belong to.
 
 **Audit** rows keep the actor's kind and ID and render the current name. Owners and userAdmins see the whole org,
-including workspaces that were deleted ("Incidents (deleted)"). The CSV export carries workspace, actor kind and
+including workspaces that were deleted ("Incidents (deleted)"); a `user` sees their own workspaces and their own
+actions. Suite events about the organization, workspaces and players are marked **Shared** (see *Shared with Keyhole*). The CSV export carries workspace, actor kind and
 ID, the console human (`via_human_id`), the reason and the detail.
 
 ### REST + MCP, described by Swagger
@@ -217,14 +265,14 @@ switch persona, pause the simulated agents, or force every list into its loading
 
 | # | Flow | Where to go |
 |---|---|---|
-| 1 | **Golden path: a durable message** | Controls › *New org*. Follow the Home checklist: create a workspace → register two agents (just a name each — no harness to pick) → add both (a workspace token is shown once for each) → send a message to *all agents* with a tag and a *fire when all ack* webhook. It's **queued** because nobody is connected. Open **Connect** › Download config for its client (the file has both tokens filled in) and the agent connects about 4 s later, reporting its client — the Agents page shows it as *reported*. Connect the second agent too, then watch the receipts move to read and acknowledged, and the webhook fire with a 200. Tokens live only in this tab: after a reload the button reads *Download template — missing …*; rotate right there to get a working file. |
-| 2 | **Addressing and receipts** | *Release train* › Messages. Compare the *All agents*, *Only deployer* and *All agents except web-scraper* messages. Filter by tag chips, open any message to see the per-agent receipt table and the delivered, read and acknowledged lists. Replies nest under their parent (threads with more than 2 replies start collapsed, showing the count and the latest reply); filters and search match replies too and open the thread at the match. The *Webhook* filter narrows to threads whose first message has a webhook (fire or listen), or doesn't. |
-| 3 | **Fire webhook** | The planner → deployer message fires `ci.acme.dev/hooks/smoke-suite` on ack. Attempt 1 got a 503 and the retry got a 200. The **Webhooks** tab lists every webhook, and a failing one gets a banner. Send one to a URL containing `fail` to watch the scheduled retries (30 s, 2 min, 10 min) and *gave up*; address it only to a blocked agent, or expire it, to see *won't fire*. |
-| 4 | **Listener** | The builder's *waiting on the build farm* message has a 401 call (wrong password) and a 202 call that was appended to its thread by `lsn_8Kq2vT`. Use *Simulate a call* or *Simulate a wrong password*, *Rotate password*, or *Expire now* and then call it again to get a 410. Compose your own with Webhook › Listen and you get the URL and the one-time password. |
-| 5 | **Delegation** | Members: planner (an **agent**) and Ravi are admins delegated by Dana. Delegate or remove admin from the ⋯ menu (each shows an impact preview). Remove admin from Ravi, then from Dana: the preview says Dana Keller and Ravi Mehta (org admins) become the workspace's default admins, the Members tab lists them as *Default admin*, and Audit records the fallback — planner stays admin but never the only one. On **People**, the last Owner is protected; transfer ownership to Ravi, switch to Ravi, and remove Dana: her agents, the admin rights she delegated and her messages all stay. The audit log shows planner adding deployer *as delegated admin*; to produce such rows yourself, use Try it as planner (Flow 8) on the admin endpoints. |
-| 6 | **Blocklists and filters** | Access tab: web-scraper is a member with a valid token but sits on the workspace blocklist, so the checker shows it refused at rule 3. *Block…* previews what a new block affects. On the Agents page, deployer blocks *Sandbox* on its own side, reviewer blocks web-scraper as an author, and web-scraper has made itself read-only. Disconnect deployer, send it a message, block it, reconnect: the queued receipt turns *Filtered*, not delivered, while the ones it had already read keep their state with an *access removed* note. Suspend it instead and the queue is *Held*, then delivered on resume. Block the only target that hasn't acknowledged an all-ack message and its webhook says *Won't fire*, instead of firing. |
-| 7 | **Human oversight** | View as *Mia* (a user): she sees and searches every message, including ones addressed *only* to other agents, and can post, but can't manage members. **Search** spans workspaces, and *Waiting on an ack* finds stalled messages. Suspend Mia on **People** (as Dana): as Mia, Acme Corp shows only *You're suspended in Acme Corp* with a link to **Northwind Labs**, where she still posts to *Docs site*. Invite leo@northwind.dev to Acme: as Leo, Acme shows only the invitation until he accepts; suspending and resuming him leaves him invited. |
-| 8 | **API & MCP** | Developers › Try it. The console needs the agent's real tokens: without them it's **401**. Seeded agents' tokens were never shown, so rotate builder's agent token (Agents › builder) and its Release train token (Members › ⋯), then *Use the one issued in this tab*. As *builder*, send a message and get **201** with the per-agent receipts, read and acknowledge a chosen message, and see that `GET msg_05` (addressed only to deployer) is **404** and search leaves it out. As *web-scraper* (after rotating its agent token), reading Release train returns **403** naming the blocklist rule. Every call shows up in Audit as the agent *via* you. |
+| 1 | **Golden path: a durable message** | Controls › *New org*. Follow the Home checklist: create a workspace (*Production* is suggested) → register two agents on Players › Agents (just a name each — no harness to pick) → add both from the workspace's Members tab (a workspace token is shown once for each) → send a message to *all agents* with a tag and a *fire when all ack* webhook. It's **queued** because nobody is connected. Open **Connect** › Download config for its client (the file has both tokens filled in) and the agent connects about 4 s later, reporting its client — Players › Agents shows it under *Reported client*. Connect the second agent too, then watch the receipts move to read and acknowledged, and the webhook fire with a 200. Tokens live only in this tab: after a reload the button reads *Download template — missing …*; rotate right there to get a working file. |
+| 2 | **Addressing and receipts** | *Production* › Messages (Release train's content moved here). Compare the *All agents*, *Only deployer* and *All agents except reporting-bot* messages. Filter by tag chips, open any message to see the per-agent receipt table and the delivered, read and acknowledged lists — reporting-bot is suspended, so what's addressed to it is *held*. Replies nest under their parent (threads with more than 2 replies start collapsed, showing the count and the latest reply); filters and search match replies too and open the thread at the match. The *Webhook* filter matches a thread when its first message or any reply has a webhook (fire or listen); a card whose webhook is on a reply shows a *↳ reply webhook* badge. |
+| 3 | **Fire webhook** | In Production, the planner → deployer message fires `ci.acme.dev/hooks/smoke-suite` on ack. Attempt 1 got a 503 and the retry got a 200. The **Webhooks** tab lists every webhook, and a failing one gets a banner. Send one to a URL containing `fail` to watch the scheduled retries (30 s, 2 min, 10 min) and *gave up*; address it only to a blocked agent, or expire it, to see *won't fire*. |
+| 4 | **Listener** | The builder's *waiting on the build farm* message in Production has a 401 call (wrong password) and a 202 call that was appended to its thread by `lsn_8Kq2vT`. Use *Simulate a call* or *Simulate a wrong password*, *Rotate password*, or *Expire now* and then call it again to get a 410. Compose your own with Webhook › Listen and you get the URL and the one-time password. |
+| 5 | **Delegation** | *Production* › Members: nobody is an explicit human workspace admin, so Dana and Ravi are its *Default admin (org)*; planner (an **agent**) is a workspace admin delegated by Dana. On **Players › Users**, open Mia's ⋯ › *Assign workspaces…* and make her *Workspace admin* of Production: the preview lists the role change, and Production's Audit gets the same *Delegated admin* row (marked Shared) the Members tab would write. Assign her back to *Member* (or untick Incidents, where she's the only workspace admin): the preview names the default admins who take over, and Audit records the fallback — planner stays admin but never the only one. The last Owner is protected; transfer ownership to Ravi from the ⋯ menu, switch to Ravi, and remove Dana: her agents, the admin rights she delegated and her messages all stay. The audit log shows planner adding deployer *as delegated admin*; to produce such rows yourself, use Try it as planner (Flow 8) on the admin endpoints. |
+| 6 | **Blocklists and filters** | *Incidents* › Access: web-scraper is a member with a valid token but sits on the workspace blocklist, so the checker shows it refused at rule 3. *Block…* previews what a new block affects. On Players › Agents, docs-agent blocks *Staging* on its own side, reviewer blocks web-scraper as an author, and web-scraper has made itself read-only. Disconnect deployer, send it a message in Production, block it there, reconnect: the queued receipt turns *Filtered*, not delivered, while the ones it had already read keep their state with an *access removed* note. Suspend it instead and the queue is *Held*, then delivered on resume. Block the only target that hasn't acknowledged an all-ack message and its webhook says *Won't fire*, instead of firing. |
+| 7 | **Human oversight and workspace admins** | View as *Mia* (a user): in Production she sees and searches every message, including ones addressed *only* to other agents, and can post, but can't manage members. In *Incidents*, where she's workspace admin, she can add and remove members and delegate workspace admin (to a human or an agent), while org-level items (suspend, revoke, rotate an agent token, org role) stay disabled with *Org admins only*. **Search** spans workspaces, and *Waiting on an ack* finds stalled messages. Suspend Mia on **Players › Users** (as Dana): as Mia, Acme Corp shows only *You're suspended in Acme Corp* with a link to **Northwind Labs**, where she still posts to *Docs site*. Jo is seeded suspended in Acme and Sam as a pending invite. Invite leo@northwind.dev to Acme with *Invite user*: as Leo, Acme shows only the invitation until he accepts; suspending and resuming him leaves him invited. |
+| 8 | **API & MCP** | Developers › Try it. The console needs the agent's real tokens: without them it's **401**. Seeded agents' tokens were never shown, so rotate builder's agent token (Players › Agents › builder › ⋯ › *Rotate token…*) and its Production token (Production › Members › ⋯ › *Rotate workspace token…*), then *Use the one issued in this tab*. As *builder*, send a message and get **201** with the per-agent receipts, read and acknowledge a chosen message, and see that `GET msg_05` (addressed only to deployer) is **404** and search leaves it out; `GET /v1/agent/me` reports its client and `last_transport`. As *web-scraper* (after rotating its tokens), reading Incidents returns **403** naming the blocklist rule. As *planner*, `PATCH /members/ag_builder` with `{"role":"admin"}` delegates workspace admin over the API — the same Shared audit row as the UI. Every call shows up in Audit as the agent *via* you. |
 
 ## Decisions to revisit before this becomes a spec
 
