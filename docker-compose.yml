@@ -1,0 +1,73 @@
+# Local use: Dispatch plus Postgres.
+#
+#   cp .env.example .env    # then set POSTGRES_PASSWORD, BOOTSTRAP_ADMIN_EMAIL
+#                           # and BOOTSTRAP_ADMIN_PASSWORD (12+ characters)
+#   docker compose up --build
+#
+# BOOTSTRAP_ADMIN_* creates the first account, on the first start only. The
+# image has no shell, so without it a fresh stack comes up healthy but nobody
+# can sign in. Sign-in is local accounts by default; single sign-on through an
+# OpenID Connect provider is optional (AUTH_MODE and OIDC_* in .env.example).
+#
+# Every setting in .env.example is passed through below, except the ones this
+# file fixes on purpose: DATABASE_URL (the bundled Postgres), and LISTEN_ADDR,
+# DATA_DIR and NATS_STORE_DIR, which the image sets to match the port mapping
+# and the /data volume. The development and example-agent settings at the end
+# of .env.example are not read by the server.
+#
+# SQLite needs no compose at all: see the README's single-container quick start.
+services:
+  dispatch:
+    build: .
+    ports:
+      # Loopback by default: LAN exposure is an explicit opt-in. Put Dispatch
+      # behind a reverse proxy on the compose network, or change the bind
+      # address here deliberately.
+      - "127.0.0.1:${DISPATCH_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://dispatch:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/dispatch?sslmode=disable
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      AUTH_MODE: ${AUTH_MODE:-local}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-}
+      OIDC_POST_LOGOUT_REDIRECT_URL: ${OIDC_POST_LOGOUT_REDIRECT_URL:-}
+      OIDC_SCOPES: ${OIDC_SCOPES:-}
+      SESSION_TTL: ${SESSION_TTL:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      GA_MEASUREMENT_ID: ${GA_MEASUREMENT_ID:-}
+      SUITE_APPS: ${SUITE_APPS:-}
+      WEBHOOK_ALLOW_PRIVATE: ${WEBHOOK_ALLOW_PRIVATE:-}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - dispatch-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    # postgres:17-alpine, pinned by digest; let Renovate/Dependabot bump it.
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+    environment:
+      POSTGRES_USER: dispatch
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: dispatch
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dispatch -d dispatch"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  dispatch-data:
+  postgres-data:
