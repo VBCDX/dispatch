@@ -1,0 +1,45 @@
+# Forgejo-only. This workflow runs on the canonical Forgejo repository, on a
+# self-hosted runner (runs-on: self-hosted) whose jobs reach a Docker-in-Docker
+# daemon over TCP at the job network's gateway. GitHub does not run it: the
+# only workflow GitHub runs is .github/workflows/pages.yml. It uses no secrets.
+name: Dependency scan
+
+# New advisories are published against dependency versions that never change
+# here, so scanning only on pull requests misses them. This workflow repeats
+# the two dependency checks on a schedule; the full CI stays on pull requests.
+#
+# Forgejo registers scheduled workflows only from the repository's default
+# branch. The default branch (main) carries the product tree (go.mod, web/),
+# so this cron fires against the shipped product. If the default branch ever
+# changes, this file and the product tree must move with it or the scan goes
+# inert. Manual dispatch works
+# from any ref that carries this file.
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  govulncheck:
+    runs-on: self-hosted
+    steps:
+      - uses: https://github.com/actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: https://github.com/actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  npm-audit:
+    runs-on: self-hosted
+    steps:
+      - uses: https://github.com/actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: https://github.com/actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: npm audit (fail on high and critical advisories)
+        working-directory: web
+        run: npm audit --audit-level=high
